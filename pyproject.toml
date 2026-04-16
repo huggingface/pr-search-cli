@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pr-search-cli"
+version = "0.1.0"
+description = "Thin CLI client for the PR similarity API."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [
+  { name = "Hugging Face" }
+]
+dependencies = []
+keywords = ["cli", "pull-requests", "similarity", "clusters", "huggingface"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Version Control",
+  "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/huggingface/pr-search-cli"
+Repository = "https://github.com/huggingface/pr-search-cli"
+Issues = "https://github.com/huggingface/pr-search-cli/issues"
+
+[project.scripts]
+pr-search = "pr_search_cli.cli:main"
+pr-search-cli = "pr_search_cli.cli:main"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+  "ruff>=0.11",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "RUF"]
+ignore = ["E501"]
