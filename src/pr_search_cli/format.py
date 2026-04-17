@@ -25,6 +25,179 @@ def format_status(result: Mapping[str, Any]) -> str:
     )
 
 
+def format_analysis_status(result: Mapping[str, Any]) -> str:
+    lines = [
+        f"Repo: {result['repo']}",
+        f"Active snapshot: {result['snapshot_id']}",
+        f"Variant requested: {result['variant_requested']}",
+        f"Available: {'yes' if result['available'] else 'no'}",
+    ]
+    if not result["available"]:
+        return "\n".join(lines)
+    counts = result["counts"]
+    lines.extend(
+        [
+            f"Variant used: {result['variant_used']}",
+            f"LLM enrichment: {'yes' if result['llm_enrichment'] else 'no'}",
+            f"Generated: {result['generated_at']}",
+            (
+                "Counts: "
+                f"meta_bugs={counts['meta_bugs']} "
+                f"duplicate_issues={counts['duplicate_issues']} "
+                f"duplicate_prs={counts['duplicate_prs']}"
+            ),
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_pr_analysis(result: Mapping[str, Any]) -> str:
+    lines = [
+        f"Repo: {result['repo']}",
+        f"Snapshot: {result['snapshot_id']}",
+        f"PR #{result['pr_number']}",
+        f"Variant: {result['variant_used']}",
+        f"LLM enrichment: {'yes' if result['llm_enrichment'] else 'no'}",
+        "",
+    ]
+    if not result["found"]:
+        lines.append("No analysis cluster found for this PR in the active snapshot.")
+        return "\n".join(lines)
+    meta_bug = result.get("meta_bug")
+    if meta_bug is not None:
+        lines.extend(
+            [
+                f"Meta bug: {meta_bug['cluster_id']}",
+                f"Summary: {meta_bug['summary']}",
+                f"Canonical issue: #{meta_bug['canonical_issue_number']}",
+                f"Canonical PR: #{meta_bug['canonical_pr_number']}",
+                "PRs: " + ", ".join(f"#{number}" for number in meta_bug.get("pr_numbers", [])),
+            ]
+        )
+    duplicate_pr = result.get("duplicate_pr")
+    if duplicate_pr is not None:
+        lines.extend(
+            [
+                "",
+                f"Duplicate PR cluster: {duplicate_pr['cluster_id']}",
+                f"Target issue: #{duplicate_pr['target_issue_number']}",
+                f"Canonical PR: #{duplicate_pr['canonical_pr_number']}",
+            ]
+        )
+        duplicates = duplicate_pr.get("duplicate_pr_numbers") or []
+        if duplicates:
+            lines.append("Duplicates: " + ", ".join(f"#{number}" for number in duplicates))
+        if duplicate_pr.get("reason"):
+            lines.append(f"Reason: {duplicate_pr['reason']}")
+    return "\n".join(lines)
+
+
+def format_analysis_meta_bugs(result: Mapping[str, Any]) -> str:
+    lines = [
+        f"Repo: {result['repo']}",
+        f"Snapshot: {result['snapshot_id']}",
+        f"Variant: {result['variant_used']}",
+        f"Meta bugs returned: {result.get('meta_bug_count', len(result.get('meta_bugs') or []))}",
+        "",
+        "Meta bugs:",
+    ]
+    meta_bugs = result.get("meta_bugs") or []
+    if not meta_bugs:
+        lines.append("- none")
+        return "\n".join(lines)
+    for index, meta_bug in enumerate(meta_bugs, start=1):
+        lines.append(
+            f"{meta_bug.get('rank', index)}. {meta_bug['cluster_id']}  "
+            f"issue=#{meta_bug['canonical_issue_number']}  pr=#{meta_bug['canonical_pr_number']}  "
+            f"confidence={meta_bug['confidence']:.2f}"
+        )
+        lines.append(f"   {meta_bug['summary']}")
+    return "\n".join(lines)
+
+
+def format_analysis_meta_bug(result: Mapping[str, Any]) -> str:
+    meta_bug = result["meta_bug"]
+    lines = [
+        f"Meta bug: {meta_bug['cluster_id']}",
+        f"Rank: {meta_bug['rank']}",
+        f"Summary: {meta_bug['summary']}",
+        f"Status: {meta_bug['status']}",
+        f"Confidence: {meta_bug['confidence']:.2f}",
+        f"Canonical issue: #{meta_bug['canonical_issue_number']}",
+        f"Canonical PR: #{meta_bug['canonical_pr_number']}",
+        "PRs: " + ", ".join(f"#{number}" for number in meta_bug.get("pr_numbers", [])),
+    ]
+    duplicate_pr = result.get("duplicate_pr")
+    if duplicate_pr is not None:
+        lines.extend(
+            [
+                "",
+                f"Duplicate PR target issue: #{duplicate_pr['target_issue_number']}",
+                f"Reason: {duplicate_pr['reason']}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def format_analysis_duplicate_prs(result: Mapping[str, Any]) -> str:
+    lines = [
+        f"Repo: {result['repo']}",
+        f"Snapshot: {result['snapshot_id']}",
+        f"Variant: {result['variant_used']}",
+        (
+            "Duplicate PR clusters returned: "
+            f"{result.get('duplicate_pr_count', len(result.get('duplicate_prs') or []))}"
+        ),
+        "",
+        "Duplicate PR clusters:",
+    ]
+    duplicate_prs = result.get("duplicate_prs") or []
+    if not duplicate_prs:
+        lines.append("- none")
+        return "\n".join(lines)
+    for index, entry in enumerate(duplicate_prs, start=1):
+        lines.append(
+            f"{entry.get('rank', index)}. {entry['cluster_id']}  "
+            f"canonical=PR #{entry['canonical_pr_number']}  "
+            f"issue=#{entry['target_issue_number']}"
+        )
+        duplicates = entry.get("duplicate_pr_numbers") or []
+        if duplicates:
+            lines.append("   duplicates: " + ", ".join(f"#{number}" for number in duplicates))
+        if entry.get("reason"):
+            lines.append(f"   {entry['reason']}")
+    return "\n".join(lines)
+
+
+def format_analysis_best(result: Mapping[str, Any]) -> str:
+    lines = [
+        f"Repo: {result['repo']}",
+        f"Snapshot: {result['snapshot_id']}",
+        f"Variant: {result['variant_used']}",
+        "",
+        "Best picks:",
+    ]
+    best_issue = result.get("best_issue")
+    if best_issue is None:
+        lines.append("- issue: none")
+    else:
+        lines.append(
+            f"- issue #{best_issue['issue_number']}  cluster={best_issue.get('cluster_id') or '-'}  "
+            f"score={best_issue['score']:.2f}"
+        )
+        lines.append(f"  {best_issue['reason']}")
+    best_pr = result.get("best_pr")
+    if best_pr is None:
+        lines.append("- pr: none")
+    else:
+        lines.append(
+            f"- pr #{best_pr['pr_number']}  cluster={best_pr.get('cluster_id') or '-'}  "
+            f"score={best_pr['score']:.2f}"
+        )
+        lines.append(f"  {best_pr['reason']}")
+    return "\n".join(lines)
+
+
 def format_similar(result: Mapping[str, Any]) -> str:
     query = result.get("query") or {}
     mode_used = str(query.get("mode_used") or "indexed")

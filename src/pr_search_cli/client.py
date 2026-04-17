@@ -15,6 +15,66 @@ class PrSearchApiClient:
         owner, name = _split_repo(repo)
         return self._get_json(f"/v1/repos/{owner}/{name}/status")
 
+    def get_analysis_status(self, repo: str, *, variant: str) -> dict[str, Any]:
+        owner, name = _split_repo(repo)
+        return self._get_json(
+            f"/v1/repos/{owner}/{name}/analysis/status",
+            params={"variant": variant},
+        )
+
+    def get_pr_analysis(self, repo: str, *, number: int, variant: str) -> dict[str, Any]:
+        owner, name = _split_repo(repo)
+        return self._get_json(
+            f"/v1/repos/{owner}/{name}/pulls/{number}/analysis",
+            params={"variant": variant},
+        )
+
+    def list_analysis_meta_bugs(
+        self,
+        repo: str,
+        *,
+        limit: int | None,
+        variant: str,
+    ) -> dict[str, Any]:
+        owner, name = _split_repo(repo)
+        return self._get_json(
+            f"/v1/repos/{owner}/{name}/analysis/meta-bugs",
+            params=_analysis_params(limit=limit, variant=variant),
+        )
+
+    def get_analysis_meta_bug(
+        self,
+        repo: str,
+        *,
+        cluster_id: str,
+        variant: str,
+    ) -> dict[str, Any]:
+        owner, name = _split_repo(repo)
+        return self._get_json(
+            f"/v1/repos/{owner}/{name}/analysis/meta-bugs/{cluster_id}",
+            params={"variant": variant},
+        )
+
+    def list_analysis_duplicate_prs(
+        self,
+        repo: str,
+        *,
+        limit: int | None,
+        variant: str,
+    ) -> dict[str, Any]:
+        owner, name = _split_repo(repo)
+        return self._get_json(
+            f"/v1/repos/{owner}/{name}/analysis/duplicate-prs",
+            params=_analysis_params(limit=limit, variant=variant),
+        )
+
+    def get_analysis_best(self, repo: str, *, variant: str) -> dict[str, Any]:
+        owner, name = _split_repo(repo)
+        return self._get_json(
+            f"/v1/repos/{owner}/{name}/analysis/best",
+            params={"variant": variant},
+        )
+
     def get_similar(
         self,
         repo: str,
@@ -86,6 +146,13 @@ def _split_repo(repo: str) -> tuple[str, str]:
 
 def _lookup_params(limit: int | None, *, mode: str) -> dict[str, int | str]:
     params: dict[str, int | str] = {"mode": mode}
+    if limit is not None:
+        params["limit"] = limit
+    return params
+
+
+def _analysis_params(limit: int | None, *, variant: str) -> dict[str, int | str]:
+    params: dict[str, int | str] = {"variant": variant}
     if limit is not None:
         params["limit"] = limit
     return params

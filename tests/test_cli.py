@@ -28,6 +28,7 @@ def test_module_help_smoke() -> None:
     assert "similar 67144" in result.stdout
     assert "clusters 67144" in result.stdout
     assert "cluster list --limit 20" in result.stdout
+    assert "analysis pr 67144" in result.stdout
 
 
 def test_status_and_similar_json() -> None:
@@ -104,6 +105,185 @@ def test_status_and_similar_json() -> None:
     assert "Repo: openclaw/openclaw" in status.stdout
     payload = json.loads(similar.stdout)
     assert payload["similar_prs"][0]["neighbor_pr_number"] == 99
+
+
+def test_analysis_status_and_pr_text() -> None:
+    routes = {
+        "/v1/repos/openclaw/openclaw/analysis/status?variant=auto": {
+            "repo": "openclaw/openclaw",
+            "snapshot_id": "20260416T120000Z",
+            "run_id": "run-1",
+            "variant_requested": "auto",
+            "available": True,
+            "variant_used": "hybrid",
+            "llm_enrichment": True,
+            "generated_at": "2026-04-16T12:00:00Z",
+            "counts": {
+                "meta_bugs": 3,
+                "duplicate_issues": 1,
+                "duplicate_prs": 2,
+            },
+        },
+        "/v1/repos/openclaw/openclaw/pulls/123/analysis?variant=auto": {
+            "repo": "openclaw/openclaw",
+            "snapshot_id": "20260416T120000Z",
+            "run_id": "run-1",
+            "variant_requested": "auto",
+            "variant_used": "hybrid",
+            "llm_enrichment": True,
+            "generated_at": "2026-04-16T12:00:00Z",
+            "pr_number": 123,
+            "found": True,
+            "meta_bug": {
+                "rank": 1,
+                "cluster_id": "cluster-123-2",
+                "summary": "CI regression",
+                "status": "open",
+                "confidence": 0.93,
+                "canonical_issue_number": 100,
+                "canonical_pr_number": 123,
+                "issue_numbers": [100],
+                "pr_numbers": [123, 124],
+                "evidence_types": ["closing_reference"],
+            },
+            "duplicate_pr": {
+                "cluster_id": "cluster-123-2",
+                "canonical_pr_number": 123,
+                "duplicate_pr_numbers": [124],
+                "target_issue_number": 100,
+                "reason": "Same fix path.",
+            },
+        },
+    }
+    with _json_server(routes) as base_url:
+        status = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pr_search_cli",
+                "--base-url",
+                base_url,
+                "analysis",
+                "status",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=TEST_ENV,
+        )
+        pr = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pr_search_cli",
+                "--base-url",
+                base_url,
+                "analysis",
+                "pr",
+                "123",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=TEST_ENV,
+        )
+
+    assert status.returncode == 0
+    assert "Variant used: hybrid" in status.stdout
+    assert "LLM enrichment: yes" in status.stdout
+    assert pr.returncode == 0
+    assert "Meta bug: cluster-123-2" in pr.stdout
+    assert "Duplicates: #124" in pr.stdout
+
+
+def test_analysis_meta_bugs_and_best_json() -> None:
+    routes = {
+        "/v1/repos/openclaw/openclaw/analysis/meta-bugs?variant=auto&limit=2": {
+            "repo": "openclaw/openclaw",
+            "snapshot_id": "20260416T120000Z",
+            "run_id": "run-1",
+            "variant_requested": "auto",
+            "variant_used": "hybrid",
+            "llm_enrichment": True,
+            "generated_at": "2026-04-16T12:00:00Z",
+            "meta_bug_count": 1,
+            "meta_bugs": [
+                {
+                    "rank": 1,
+                    "cluster_id": "cluster-123-2",
+                    "summary": "CI regression",
+                    "status": "open",
+                    "confidence": 0.93,
+                    "canonical_issue_number": 100,
+                    "canonical_pr_number": 123,
+                    "issue_numbers": [100],
+                    "pr_numbers": [123, 124],
+                    "evidence_types": ["closing_reference"],
+                }
+            ],
+        },
+        "/v1/repos/openclaw/openclaw/analysis/best?variant=auto": {
+            "repo": "openclaw/openclaw",
+            "snapshot_id": "20260416T120000Z",
+            "run_id": "run-1",
+            "variant_requested": "auto",
+            "variant_used": "hybrid",
+            "llm_enrichment": True,
+            "generated_at": "2026-04-16T12:00:00Z",
+            "best_issue": {
+                "cluster_id": "cluster-123-2",
+                "issue_number": 100,
+                "reason": "Best issue.",
+                "score": 0.91,
+            },
+            "best_pr": {
+                "cluster_id": "cluster-123-2",
+                "pr_number": 123,
+                "reason": "Best PR.",
+                "score": 0.92,
+            },
+        },
+    }
+    with _json_server(routes) as base_url:
+        meta_bugs = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pr_search_cli",
+                "--base-url",
+                base_url,
+                "--json",
+                "analysis",
+                "meta-bugs",
+                "--limit",
+                "2",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=TEST_ENV,
+        )
+        best = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pr_search_cli",
+                "--base-url",
+                base_url,
+                "--json",
+                "analysis",
+                "best",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=TEST_ENV,
+        )
+
+    assert meta_bugs.returncode == 0
+    assert json.loads(meta_bugs.stdout)["meta_bugs"][0]["cluster_id"] == "cluster-123-2"
+    assert best.returncode == 0
+    assert json.loads(best.stdout)["best_pr"]["cluster_id"] == "cluster-123-2"
 
 
 def test_clusters_json() -> None:

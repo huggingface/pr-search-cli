@@ -13,6 +13,8 @@ Run without installing permanently:
 
 ```bash
 uvx pr-search-cli repo status
+uvx pr-search-cli analysis status
+uvx pr-search-cli analysis pr 67144
 uvx pr-search-cli similar 67144
 uvx pr-search-cli clusters 67144
 uvx pr-search-cli cluster list --limit 20
@@ -28,6 +30,12 @@ uvx --from pr-search-cli pr-search repo status
 
 ```text
 pr-search repo status
+pr-search analysis status
+pr-search analysis pr <number>
+pr-search analysis meta-bugs
+pr-search analysis meta-bug <cluster-id>
+pr-search analysis duplicate-prs
+pr-search analysis best
 pr-search similar <number>
 pr-search clusters <number>
 pr-search cluster list
@@ -48,6 +56,8 @@ Useful flags:
 
 ```bash
 pr-search repo status
+pr-search analysis status
+pr-search analysis pr 67144
 pr-search similar 67144
 pr-search clusters 67144
 pr-search cluster list --limit 20
