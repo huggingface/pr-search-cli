@@ -1,316 +1,812 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 
-def format_status(result: Mapping[str, Any]) -> str:
-    counts = result["row_counts"]
-    return "\n".join(
+@dataclass(frozen=True, slots=True)
+class OutputFormatter:
+    text: Callable[[dict[str, Any]], str]
+    rows: Callable[[dict[str, Any]], list[dict[str, Any]]] | None = None
+    ids: Callable[[dict[str, Any]], list[Any]] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TableColumn:
+    header: str
+    render: Callable[[dict[str, Any]], str]
+
+
+STATUS_FORMATTER = OutputFormatter(text=lambda payload: format_status(payload))
+CODE_STATUS_FORMATTER = OutputFormatter(text=lambda payload: format_code_status(payload))
+CODE_SIMILAR_FORMATTER = OutputFormatter(
+    text=lambda payload: format_similar(payload),
+    rows=lambda payload: list(payload.get("similar_prs") or []),
+    ids=lambda payload: [row.get("neighbor_pr_number") for row in payload.get("similar_prs") or []],
+)
+CODE_CLUSTERS_FOR_PR_FORMATTER = OutputFormatter(
+    text=lambda payload: format_clusters(payload),
+    rows=lambda payload: _cluster_lookup_rows(payload),
+    ids=lambda payload: _deduped_cluster_ids(_cluster_lookup_rows(payload)),
+)
+CODE_CLUSTER_LIST_FORMATTER = OutputFormatter(
+    text=lambda payload: format_cluster_list(payload),
+    rows=lambda payload: list(payload.get("clusters") or []),
+    ids=lambda payload: [row.get("cluster_id") for row in payload.get("clusters") or []],
+)
+CODE_CLUSTER_SHOW_FORMATTER = OutputFormatter(
+    text=lambda payload: format_cluster(payload),
+    rows=lambda payload: list(payload.get("members") or []),
+    ids=lambda payload: [row.get("pr_number") for row in payload.get("members") or []],
+)
+ISSUE_STATUS_FORMATTER = OutputFormatter(text=lambda payload: format_issue_status(payload))
+ISSUE_LIST_FORMATTER = OutputFormatter(
+    text=lambda payload: format_issue_clusters(payload),
+    rows=lambda payload: list(payload.get("clusters") or []),
+    ids=lambda payload: [row.get("cluster_id") for row in payload.get("clusters") or []],
+)
+ISSUE_SHOW_FORMATTER = OutputFormatter(text=lambda payload: format_issue_cluster(payload))
+ISSUE_FOR_PR_FORMATTER = OutputFormatter(
+    text=lambda payload: format_issue_clusters_for_pr(payload),
+    rows=lambda payload: list(payload.get("clusters") or []),
+    ids=lambda payload: [row.get("cluster_id") for row in payload.get("clusters") or []],
+)
+ISSUE_MEMBERSHIP_FORMATTER = OutputFormatter(
+    text=lambda payload: format_issue_membership(payload),
+    rows=lambda payload: list(payload.get("clusters") or []),
+    ids=lambda payload: list(payload.get("matching_cluster_ids") or []),
+)
+ISSUE_DUPLICATE_PRS_FORMATTER = OutputFormatter(
+    text=lambda payload: format_issue_duplicate_prs(payload),
+    rows=lambda payload: list(payload.get("duplicate_prs") or []),
+    ids=lambda payload: [row.get("cluster_id") for row in payload.get("duplicate_prs") or []],
+)
+ISSUE_BEST_FORMATTER = OutputFormatter(text=lambda payload: format_issue_best(payload))
+CONTRIBUTOR_STATUS_FORMATTER = OutputFormatter(text=lambda payload: format_contributor_status(payload))
+CONTRIBUTOR_LIST_FORMATTER = OutputFormatter(
+    text=lambda payload: format_contributors(payload),
+    rows=lambda payload: list(payload.get("contributors") or []),
+    ids=lambda payload: [row.get("author_login") for row in payload.get("contributors") or []],
+)
+CONTRIBUTOR_SHOW_FORMATTER = OutputFormatter(text=lambda payload: format_contributor(payload))
+CONTRIBUTOR_RISK_FORMATTER = OutputFormatter(text=lambda payload: format_contributor_risk(payload))
+
+
+def format_status(payload: dict[str, Any]) -> str:
+    counts = payload.get("row_counts") or {}
+    lines = _record(
         [
-            f"Repo: {result['repo']}",
-            f"Active run: {result['id']}",
-            f"Snapshot: {result['snapshot_id']}",
-            f"Source: {result['source_type']}",
-            f"Finished: {result.get('finished_at') or 'running'}",
-            (
-                "Rows: "
-                f"documents={counts['documents']} "
-                f"features={counts['features']} "
-                f"neighbors={counts['neighbors']} "
-                f"clusters={counts['clusters']} "
-                f"candidates={counts['cluster_candidates']}"
+            ("repo", payload.get("repo")),
+            ("active_run", payload.get("id")),
+            ("snapshot_id", payload.get("snapshot_id")),
+            ("source_type", payload.get("source_type")),
+            ("finished_at", payload.get("finished_at") or "running"),
+            ("documents", counts.get("documents")),
+            ("features", counts.get("features")),
+            ("neighbors", counts.get("neighbors")),
+            ("clusters", counts.get("clusters")),
+            ("cluster_candidates", counts.get("cluster_candidates")),
+        ]
+    )
+    surfaces = payload.get("surfaces") or {}
+    if not surfaces:
+        return lines
+    surface_rows = [
+        {
+            "surface": "code",
+            "available": True,
+            "summary": (
+                f"documents={counts.get('documents', 0)} clusters={counts.get('clusters', 0)}"
             ),
+        },
+        {
+            "surface": "issues",
+            "available": (surfaces.get("issues") or {}).get("available"),
+            "summary": _issue_surface_summary(surfaces.get("issues") or {}),
+        },
+        {
+            "surface": "contributors",
+            "available": (surfaces.get("contributors") or {}).get("available"),
+            "summary": _contributor_surface_summary(surfaces.get("contributors") or {}),
+        },
+    ]
+    return _join_sections(lines, _section("SURFACES", _table(surface_rows, _surface_columns())))
+
+
+
+def format_code_status(payload: dict[str, Any]) -> str:
+    counts = payload.get("row_counts") or {}
+    return _record(
+        [
+            ("repo", payload.get("repo")),
+            ("active_run", payload.get("id")),
+            ("snapshot_id", payload.get("snapshot_id")),
+            ("source_type", payload.get("source_type")),
+            ("finished_at", payload.get("finished_at") or "running"),
+            ("documents", counts.get("documents")),
+            ("features", counts.get("features")),
+            ("neighbors", counts.get("neighbors")),
+            ("clusters", counts.get("clusters")),
+            ("cluster_candidates", counts.get("cluster_candidates")),
         ]
     )
 
 
-def format_analysis_status(result: Mapping[str, Any]) -> str:
-    lines = [
-        f"Repo: {result['repo']}",
-        f"Active snapshot: {result['snapshot_id']}",
-        f"Variant requested: {result['variant_requested']}",
-        f"Available: {'yes' if result['available'] else 'no'}",
-    ]
-    if not result["available"]:
-        return "\n".join(lines)
-    counts = result["counts"]
-    lines.extend(
+
+def format_similar(payload: dict[str, Any]) -> str:
+    query = payload.get("query") or {}
+    rows = []
+    for index, row in enumerate(payload.get("similar_prs") or [], start=1):
+        rows.append(
+            {
+                "rank": index,
+                "pr": row.get("neighbor_pr_number"),
+                "score": row.get("similarity"),
+                "content": row.get("content_similarity"),
+                "size": row.get("size_similarity"),
+                "breadth": row.get("breadth_similarity"),
+                "concentration": row.get("concentration_similarity"),
+                "cluster": _first(row.get("cluster_ids")),
+                "shared": _shared_label(row),
+                "title": row.get("neighbor_title"),
+            }
+        )
+    header = _record(
         [
-            f"Variant used: {result['variant_used']}",
-            f"LLM enrichment: {'yes' if result['llm_enrichment'] else 'no'}",
-            f"Generated: {result['generated_at']}",
-            (
-                "Counts: "
-                f"meta_bugs={counts['meta_bugs']} "
-                f"duplicate_issues={counts['duplicate_issues']} "
-                f"duplicate_prs={counts['duplicate_prs']}"
-            ),
+            ("pr_number", (payload.get("pr") or {}).get("pr_number")),
+            ("title", (payload.get("pr") or {}).get("title")),
+            ("snapshot_id", payload.get("snapshot_id")),
+            ("lookup_mode", query.get("mode_used") or query.get("mode_requested") or "indexed"),
+            ("lookup_source", query.get("source") or "active_index"),
+            ("similar_count", payload.get("similar_count", len(rows))),
         ]
     )
-    return "\n".join(lines)
+    return _join_sections(header, _section("SIMILAR PRS", _table(rows, _similar_columns())))
 
 
-def format_pr_analysis(result: Mapping[str, Any]) -> str:
-    lines = [
-        f"Repo: {result['repo']}",
-        f"Snapshot: {result['snapshot_id']}",
-        f"PR #{result['pr_number']}",
-        f"Variant: {result['variant_used']}",
-        f"LLM enrichment: {'yes' if result['llm_enrichment'] else 'no'}",
-        "",
+
+def format_clusters(payload: dict[str, Any]) -> str:
+    query = payload.get("query") or {}
+    assigned_rows = []
+    for row in payload.get("assigned_clusters") or []:
+        assigned_rows.append(
+            {
+                "cluster_id": row.get("cluster_id"),
+                "representative_pr": row.get("representative_pr_number"),
+                "size": row.get("cluster_size"),
+                "avg_similarity": row.get("average_similarity"),
+                "summary": row.get("summary"),
+            }
+        )
+    candidate_rows = []
+    for row in payload.get("candidate_clusters") or []:
+        candidate_rows.append(
+            {
+                "cluster_id": row.get("cluster_id"),
+                "score": row.get("candidate_score"),
+                "assigned": row.get("assigned"),
+                "representative_pr": row.get("representative_pr_number"),
+                "matched_members": _join_numbers(row.get("matched_member_pr_numbers") or []),
+                "reason": row.get("reason"),
+            }
+        )
+    header = _record(
+        [
+            ("pr_number", (payload.get("pr") or {}).get("pr_number")),
+            ("title", (payload.get("pr") or {}).get("title")),
+            ("lookup_mode", query.get("mode_used") or query.get("mode_requested") or "indexed"),
+            ("lookup_source", query.get("source") or "active_index"),
+            ("assigned_count", payload.get("assigned_cluster_count", len(assigned_rows))),
+            ("candidate_count", payload.get("candidate_cluster_count", len(candidate_rows))),
+        ]
+    )
+    return _join_sections(
+        header,
+        _section("ASSIGNED CLUSTERS", _table(assigned_rows, _assigned_cluster_columns())),
+        _section("CANDIDATE CLUSTERS", _table(candidate_rows, _candidate_cluster_columns())),
+    )
+
+
+
+def format_cluster(payload: dict[str, Any]) -> str:
+    cluster = payload.get("cluster") or {}
+    header = _record(
+        [
+            ("cluster_id", cluster.get("cluster_id")),
+            ("representative_pr", cluster.get("representative_pr_number")),
+            ("member_count", payload.get("member_count", len(payload.get("members") or []))),
+            ("average_similarity", _fmt_float(cluster.get("average_similarity"))),
+            ("summary", cluster.get("summary")),
+        ]
+    )
+    rows = [
+        {
+            "pr": row.get("pr_number"),
+            "role": row.get("member_role"),
+            "title": row.get("title"),
+        }
+        for row in payload.get("members") or []
     ]
-    if not result["found"]:
-        lines.append("No analysis cluster found for this PR in the active snapshot.")
-        return "\n".join(lines)
-    meta_bug = result.get("meta_bug")
-    if meta_bug is not None:
-        lines.extend(
+    return _join_sections(header, _section("MEMBERS", _table(rows, _cluster_member_columns())))
+
+
+
+def format_cluster_list(payload: dict[str, Any]) -> str:
+    header = _record(
+        [
+            ("repo", payload.get("repo")),
+            ("snapshot_id", payload.get("snapshot_id")),
+            ("cluster_count", payload.get("cluster_count", len(payload.get("clusters") or []))),
+        ]
+    )
+    rows = []
+    for row in payload.get("clusters") or []:
+        rows.append(
+            {
+                "rank": row.get("rank"),
+                "cluster_id": row.get("cluster_id"),
+                "representative_pr": row.get("representative_pr_number"),
+                "size": row.get("cluster_size"),
+                "avg_similarity": row.get("average_similarity"),
+                "title": row.get("representative_title"),
+                "summary": row.get("summary"),
+            }
+        )
+    return _join_sections(header, _section("CODE CLUSTERS", _table(rows, _cluster_list_columns())))
+
+
+
+def format_issue_status(payload: dict[str, Any]) -> str:
+    counts = payload.get("counts") or {}
+    return _record(
+        [
+            ("repo", payload.get("repo")),
+            ("snapshot_id", payload.get("snapshot_id")),
+            ("variant_requested", payload.get("variant_requested")),
+            ("variant_used", payload.get("variant_used") or "-"),
+            ("available", _yes_no(payload.get("available"))),
+            ("llm_enrichment", _yes_no(payload.get("llm_enrichment"))),
+            ("generated_at", payload.get("generated_at") or "-"),
+            ("available_variants", _csv(payload.get("available_variants") or [])),
+            ("meta_bugs", counts.get("meta_bugs", 0)),
+            ("duplicate_issues", counts.get("duplicate_issues", 0)),
+            ("duplicate_prs", counts.get("duplicate_prs", 0)),
+        ]
+    )
+
+
+
+def format_issue_clusters(payload: dict[str, Any]) -> str:
+    header = _record(
+        [
+            ("repo", payload.get("repo")),
+            ("snapshot_id", payload.get("snapshot_id")),
+            ("variant_used", payload.get("variant_used") or payload.get("variant_requested")),
+            ("llm_enrichment", _yes_no(payload.get("llm_enrichment"))),
+            ("cluster_count", payload.get("cluster_count", len(payload.get("clusters") or []))),
+        ]
+    )
+    return _join_sections(
+        header,
+        _section("ISSUE CLUSTERS", _table(payload.get("clusters") or [], _issue_cluster_columns())),
+    )
+
+
+
+def format_issue_cluster(payload: dict[str, Any]) -> str:
+    header = _record(
+        [
+            ("repo", payload.get("repo")),
+            ("snapshot_id", payload.get("snapshot_id")),
+            ("variant_used", payload.get("variant_used") or payload.get("variant_requested")),
+            ("found", _yes_no(payload.get("found"))),
+            ("cluster_id", payload.get("cluster_id")),
+        ]
+    )
+    cluster = payload.get("cluster")
+    if not cluster:
+        return header
+    details = _record(
+        [
+            ("title", cluster.get("title")),
+            ("summary", cluster.get("summary")),
+            ("status", cluster.get("status")),
+            ("confidence", _fmt_float(cluster.get("confidence"))),
+            ("canonical_issue", cluster.get("canonical_issue_number")),
+            ("canonical_pr", cluster.get("canonical_pr_number")),
+            ("evidence", _csv(cluster.get("evidence_types") or [])),
+        ]
+    )
+    return _join_sections(
+        header,
+        details,
+        _section("ISSUES", _table(payload.get("issues") or [], _issue_member_columns())),
+        _section("PULL REQUESTS", _table(payload.get("pull_requests") or [], _issue_pr_columns())),
+    )
+
+
+
+def format_issue_clusters_for_pr(payload: dict[str, Any]) -> str:
+    header = _record(
+        [
+            ("repo", payload.get("repo")),
+            ("snapshot_id", payload.get("snapshot_id")),
+            ("variant_used", payload.get("variant_used") or payload.get("variant_requested")),
+            ("pr_number", payload.get("pr_number")),
+            ("found", _yes_no(payload.get("found"))),
+            ("cluster_count", payload.get("cluster_count", len(payload.get("clusters") or []))),
+        ]
+    )
+    return _join_sections(
+        header,
+        _section("MATCHING ISSUE CLUSTERS", _table(payload.get("clusters") or [], _issue_for_pr_columns())),
+    )
+
+
+
+def format_issue_membership(payload: dict[str, Any]) -> str:
+    return _record(
+        [
+            ("repo", payload.get("repo")),
+            ("snapshot_id", payload.get("snapshot_id")),
+            ("variant_used", payload.get("variant_used") or payload.get("variant_requested")),
+            ("pr_number", payload.get("pr_number")),
+            ("cluster_id", payload.get("cluster_id") or "-"),
+            ("matched", _yes_no(payload.get("matched"))),
+            ("matching_cluster_ids", _csv(payload.get("matching_cluster_ids") or [])),
+        ]
+    )
+
+
+
+def format_issue_duplicate_prs(payload: dict[str, Any]) -> str:
+    header = _record(
+        [
+            ("repo", payload.get("repo")),
+            ("snapshot_id", payload.get("snapshot_id")),
+            ("variant_used", payload.get("variant_used") or payload.get("variant_requested")),
+            ("duplicate_pr_count", payload.get("duplicate_pr_count", len(payload.get("duplicate_prs") or []))),
+        ]
+    )
+    return _join_sections(
+        header,
+        _section("DUPLICATE PR CLUSTERS", _table(payload.get("duplicate_prs") or [], _duplicate_pr_columns())),
+    )
+
+
+
+def format_issue_best(payload: dict[str, Any]) -> str:
+    best_issue = payload.get("best_issue") or {}
+    best_pr = payload.get("best_pr") or {}
+    return _join_sections(
+        _record(
             [
-                f"Meta bug: {meta_bug['cluster_id']}",
-                f"Summary: {meta_bug['summary']}",
-                f"Canonical issue: #{meta_bug['canonical_issue_number']}",
-                f"Canonical PR: #{meta_bug['canonical_pr_number']}",
-                "PRs: " + ", ".join(f"#{number}" for number in meta_bug.get("pr_numbers", [])),
+                ("repo", payload.get("repo")),
+                ("snapshot_id", payload.get("snapshot_id")),
+                ("variant_used", payload.get("variant_used") or payload.get("variant_requested")),
+                ("llm_enrichment", _yes_no(payload.get("llm_enrichment"))),
             ]
-        )
-    duplicate_pr = result.get("duplicate_pr")
-    if duplicate_pr is not None:
-        lines.extend(
-            [
-                "",
-                f"Duplicate PR cluster: {duplicate_pr['cluster_id']}",
-                f"Target issue: #{duplicate_pr['target_issue_number']}",
-                f"Canonical PR: #{duplicate_pr['canonical_pr_number']}",
-            ]
-        )
-        duplicates = duplicate_pr.get("duplicate_pr_numbers") or []
-        if duplicates:
-            lines.append("Duplicates: " + ", ".join(f"#{number}" for number in duplicates))
-        if duplicate_pr.get("reason"):
-            lines.append(f"Reason: {duplicate_pr['reason']}")
-    return "\n".join(lines)
-
-
-def format_analysis_meta_bugs(result: Mapping[str, Any]) -> str:
-    lines = [
-        f"Repo: {result['repo']}",
-        f"Snapshot: {result['snapshot_id']}",
-        f"Variant: {result['variant_used']}",
-        f"Meta bugs returned: {result.get('meta_bug_count', len(result.get('meta_bugs') or []))}",
-        "",
-        "Meta bugs:",
-    ]
-    meta_bugs = result.get("meta_bugs") or []
-    if not meta_bugs:
-        lines.append("- none")
-        return "\n".join(lines)
-    for index, meta_bug in enumerate(meta_bugs, start=1):
-        lines.append(
-            f"{meta_bug.get('rank', index)}. {meta_bug['cluster_id']}  "
-            f"issue=#{meta_bug['canonical_issue_number']}  pr=#{meta_bug['canonical_pr_number']}  "
-            f"confidence={meta_bug['confidence']:.2f}"
-        )
-        lines.append(f"   {meta_bug['summary']}")
-    return "\n".join(lines)
-
-
-def format_analysis_meta_bug(result: Mapping[str, Any]) -> str:
-    meta_bug = result["meta_bug"]
-    lines = [
-        f"Meta bug: {meta_bug['cluster_id']}",
-        f"Rank: {meta_bug['rank']}",
-        f"Summary: {meta_bug['summary']}",
-        f"Status: {meta_bug['status']}",
-        f"Confidence: {meta_bug['confidence']:.2f}",
-        f"Canonical issue: #{meta_bug['canonical_issue_number']}",
-        f"Canonical PR: #{meta_bug['canonical_pr_number']}",
-        "PRs: " + ", ".join(f"#{number}" for number in meta_bug.get("pr_numbers", [])),
-    ]
-    duplicate_pr = result.get("duplicate_pr")
-    if duplicate_pr is not None:
-        lines.extend(
-            [
-                "",
-                f"Duplicate PR target issue: #{duplicate_pr['target_issue_number']}",
-                f"Reason: {duplicate_pr['reason']}",
-            ]
-        )
-    return "\n".join(lines)
-
-
-def format_analysis_duplicate_prs(result: Mapping[str, Any]) -> str:
-    lines = [
-        f"Repo: {result['repo']}",
-        f"Snapshot: {result['snapshot_id']}",
-        f"Variant: {result['variant_used']}",
-        (
-            "Duplicate PR clusters returned: "
-            f"{result.get('duplicate_pr_count', len(result.get('duplicate_prs') or []))}"
         ),
-        "",
-        "Duplicate PR clusters:",
-    ]
-    duplicate_prs = result.get("duplicate_prs") or []
-    if not duplicate_prs:
-        lines.append("- none")
-        return "\n".join(lines)
-    for index, entry in enumerate(duplicate_prs, start=1):
-        lines.append(
-            f"{entry.get('rank', index)}. {entry['cluster_id']}  "
-            f"canonical=PR #{entry['canonical_pr_number']}  "
-            f"issue=#{entry['target_issue_number']}"
-        )
-        duplicates = entry.get("duplicate_pr_numbers") or []
-        if duplicates:
-            lines.append("   duplicates: " + ", ".join(f"#{number}" for number in duplicates))
-        if entry.get("reason"):
-            lines.append(f"   {entry['reason']}")
+        _section(
+            "BEST ISSUE",
+            _record(
+                [
+                    ("issue_number", best_issue.get("issue_number") or "-"),
+                    ("title", best_issue.get("title") or "-"),
+                    ("cluster_id", best_issue.get("cluster_id") or "-"),
+                    ("score", _fmt_float(best_issue.get("score")) or "-"),
+                    ("reason", best_issue.get("reason") or "-"),
+                ]
+            ),
+        ),
+        _section(
+            "BEST PR",
+            _record(
+                [
+                    ("pr_number", best_pr.get("pr_number") or "-"),
+                    ("title", best_pr.get("title") or "-"),
+                    ("cluster_id", best_pr.get("cluster_id") or "-"),
+                    ("score", _fmt_float(best_pr.get("score")) or "-"),
+                    ("reason", best_pr.get("reason") or "-"),
+                ]
+            ),
+        ),
+    )
+
+
+
+def format_contributor_status(payload: dict[str, Any]) -> str:
+    return _record(
+        [
+            ("repo", payload.get("repo")),
+            ("snapshot_id", payload.get("snapshot_id")),
+            ("available", _yes_no(payload.get("available"))),
+            ("generated_at", payload.get("generated_at") or "-"),
+            ("window_days", payload.get("window_days") or "-"),
+            ("contributor_count", payload.get("contributor_count", 0)),
+        ]
+    )
+
+
+
+def format_contributors(payload: dict[str, Any]) -> str:
+    header = _record(
+        [
+            ("repo", payload.get("repo")),
+            ("snapshot_id", payload.get("snapshot_id")),
+            ("available", _yes_no(payload.get("available"))),
+            ("contributor_count", payload.get("contributor_count", len(payload.get("contributors") or []))),
+        ]
+    )
+    return _join_sections(
+        header,
+        _section("CONTRIBUTORS", _table(payload.get("contributors") or [], _contributor_columns())),
+    )
+
+
+
+def format_contributor(payload: dict[str, Any]) -> str:
+    header = _record(
+        [
+            ("repo", payload.get("repo")),
+            ("snapshot_id", payload.get("snapshot_id")),
+            ("author_login", payload.get("author_login")),
+            ("found", _yes_no(payload.get("found"))),
+        ]
+    )
+    summary = payload.get("summary")
+    contributor = payload.get("contributor") or {}
+    if not summary:
+        return header
+    examples = contributor.get("examples") if isinstance(contributor.get("examples"), dict) else {}
+    pr_examples = list(examples.get("pull_requests") or [])
+    issue_examples = list(examples.get("issues") or [])
+    return _join_sections(
+        header,
+        _record(
+            [
+                ("name", summary.get("name") or "-"),
+                ("profile_url", summary.get("profile_url") or "-"),
+                ("repo_association", summary.get("repo_association") or "-"),
+                ("first_seen_in_snapshot", _yes_no(summary.get("first_seen_in_snapshot"))),
+                ("new_to_repo", _yes_no(summary.get("new_to_repo"))),
+                ("snapshot_pr_count", summary.get("snapshot_pr_count")),
+                ("snapshot_issue_count", summary.get("snapshot_issue_count")),
+                ("follow_through_score", summary.get("follow_through_score") or "-"),
+                ("breadth_score", summary.get("breadth_score") or "-"),
+                ("automation_risk", summary.get("automation_risk_signal") or "-"),
+                ("heuristic_note", summary.get("heuristic_note") or "-"),
+                ("account_age_days", summary.get("account_age_days") or "-"),
+                ("public_pr_count_42d", summary.get("public_pr_count_42d") or "-"),
+                ("public_repo_count_42d", summary.get("public_repo_count_42d") or "-"),
+            ]
+        ),
+        _section("EXAMPLE PULL REQUESTS", _table(pr_examples, _contributor_pr_example_columns())),
+        _section("EXAMPLE ISSUES", _table(issue_examples, _contributor_issue_example_columns())),
+    )
+
+
+
+def format_contributor_risk(payload: dict[str, Any]) -> str:
+    risk = payload.get("risk") or {}
+    return _record(
+        [
+            ("repo", payload.get("repo")),
+            ("snapshot_id", payload.get("snapshot_id")),
+            ("author_login", payload.get("author_login")),
+            ("found", _yes_no(payload.get("found"))),
+            ("risk_available", _yes_no(payload.get("risk_available"))),
+            ("automation_risk", risk.get("automation_risk_signal") or "-"),
+            ("follow_through_score", risk.get("follow_through_score") or "-"),
+            ("breadth_score", risk.get("breadth_score") or "-"),
+            ("account_age_days", risk.get("account_age_days") or "-"),
+            ("public_pr_count_42d", risk.get("public_pr_count_42d") or "-"),
+            ("public_repo_count_42d", risk.get("public_repo_count_42d") or "-"),
+            ("report_reason", risk.get("report_reason") or "-"),
+            ("heuristic_note", risk.get("heuristic_note") or "-"),
+        ]
+    )
+
+
+
+def _record(items: list[tuple[str, Any]]) -> str:
+    width = max((len(key) for key, _ in items), default=0)
+    lines = []
+    for key, value in items:
+        lines.append(f"{key.ljust(width)}  {_display(value)}")
     return "\n".join(lines)
 
 
-def format_analysis_best(result: Mapping[str, Any]) -> str:
-    lines = [
-        f"Repo: {result['repo']}",
-        f"Snapshot: {result['snapshot_id']}",
-        f"Variant: {result['variant_used']}",
-        "",
-        "Best picks:",
+
+def _section(title: str, body: str) -> str:
+    return f"{title}\n{body}" if body else title
+
+
+
+def _join_sections(*sections: str) -> str:
+    return "\n\n".join(section for section in sections if section)
+
+
+
+def _table(rows: list[dict[str, Any]], columns: list[TableColumn]) -> str:
+    if not rows:
+        return "(none)"
+    rendered = [[column.render(row) for column in columns] for row in rows]
+    widths = [len(column.header) for column in columns]
+    for row in rendered:
+        for index, value in enumerate(row):
+            widths[index] = max(widths[index], len(value))
+    header = "  ".join(column.header.ljust(widths[index]) for index, column in enumerate(columns))
+    divider = "  ".join("-" * widths[index] for index in range(len(columns)))
+    body = [
+        "  ".join(value.ljust(widths[index]) for index, value in enumerate(row))
+        for row in rendered
     ]
-    best_issue = result.get("best_issue")
-    if best_issue is None:
-        lines.append("- issue: none")
-    else:
-        lines.append(
-            f"- issue #{best_issue['issue_number']}  cluster={best_issue.get('cluster_id') or '-'}  "
-            f"score={best_issue['score']:.2f}"
-        )
-        lines.append(f"  {best_issue['reason']}")
-    best_pr = result.get("best_pr")
-    if best_pr is None:
-        lines.append("- pr: none")
-    else:
-        lines.append(
-            f"- pr #{best_pr['pr_number']}  cluster={best_pr.get('cluster_id') or '-'}  "
-            f"score={best_pr['score']:.2f}"
-        )
-        lines.append(f"  {best_pr['reason']}")
-    return "\n".join(lines)
+    return "\n".join([header, divider, *body])
 
 
-def format_similar(result: Mapping[str, Any]) -> str:
-    query = result.get("query") or {}
-    mode_used = str(query.get("mode_used") or "indexed")
-    source = str(query.get("source") or "active_index")
-    lines = [
-        f"PR #{result['pr']['pr_number']}: {result['pr']['title']}",
-        "",
-        f"Active snapshot: {result['snapshot_id']}",
-        f"Lookup: {mode_used} via {source}",
-        f"Matches: {result.get('similar_count', len(result['similar_prs']))}",
-        "",
+
+def _surface_columns() -> list[TableColumn]:
+    return [
+        TableColumn("surface", lambda row: _display(row.get("surface"))),
+        TableColumn("available", lambda row: _yes_no(row.get("available"))),
+        TableColumn("summary", lambda row: _truncate(_display(row.get("summary")), 72)),
     ]
-    if not result["similar_prs"]:
-        lines.append("No similar PRs found in the active run.")
-        return "\n".join(lines)
-    for index, row in enumerate(result["similar_prs"], start=1):
-        lines.append(f"{index}. PR #{row['neighbor_pr_number']}  score={row['similarity']:.2f}")
-        lines.append(
-            "   "
-            f"content={row['content_similarity']:.2f} "
-            f"size={row['size_similarity']:.2f} "
-            f"breadth={row['breadth_similarity']:.2f} "
-            f"concentration={row['concentration_similarity']:.2f}"
-        )
-        if row["shared_filenames"]:
-            lines.append(f"   shared files: {', '.join(row['shared_filenames'][:5])}")
-        elif row["shared_directories"]:
-            lines.append(f"   shared directories: {', '.join(row['shared_directories'][:5])}")
-        if row["cluster_ids"]:
-            lines.append(f"   cluster: {row['cluster_ids'][0]}")
-    return "\n".join(lines)
 
 
-def format_clusters(result: Mapping[str, Any]) -> str:
-    query = result.get("query") or {}
-    mode_used = str(query.get("mode_used") or "indexed")
-    source = str(query.get("source") or "active_index")
-    lines = [
-        f"PR #{result['pr']['pr_number']}: cluster context",
-        "",
-        f"Lookup: {mode_used} via {source}",
-        f"Assigned: {result.get('assigned_cluster_count', len(result.get('assigned_clusters') or []))}",
-        f"Candidates: {result.get('candidate_cluster_count', len(result.get('candidate_clusters') or []))}",
-        "",
-        "Assigned clusters:",
+
+def _similar_columns() -> list[TableColumn]:
+    return [
+        TableColumn("rank", lambda row: _display(row.get("rank"))),
+        TableColumn("pr", lambda row: _display(row.get("pr"))),
+        TableColumn("score", lambda row: _fmt_float(row.get("score"))),
+        TableColumn("content", lambda row: _fmt_float(row.get("content"))),
+        TableColumn("size", lambda row: _fmt_float(row.get("size"))),
+        TableColumn("breadth", lambda row: _fmt_float(row.get("breadth"))),
+        TableColumn("concentration", lambda row: _fmt_float(row.get("concentration"))),
+        TableColumn("cluster", lambda row: _display(row.get("cluster") or "-")),
+        TableColumn("shared", lambda row: _truncate(_display(row.get("shared")), 28)),
+        TableColumn("title", lambda row: _truncate(_display(row.get("title")), 36)),
     ]
-    assigned_clusters = result.get("assigned_clusters") or []
-    if not assigned_clusters:
-        lines.append("- none")
-    else:
-        for cluster in assigned_clusters:
-            lines.append(
-                f"- {cluster['cluster_id']}  representative=PR #{cluster['representative_pr_number']}  "
-                f"size={cluster['cluster_size']}"
-            )
-            if cluster.get("summary"):
-                lines.append(f"  {cluster['summary']}")
-    lines.extend(["", "Candidate clusters:"])
-    candidates = result.get("candidate_clusters") or []
-    if not candidates:
-        lines.append("- none")
-        return "\n".join(lines)
-    for index, row in enumerate(candidates, start=1):
-        lines.append(
-            f"{index}. {row['cluster_id']}  score={row['candidate_score']:.2f}  "
-            f"assigned={'yes' if row['assigned'] else 'no'}"
-        )
-        lines.append(f"   representative: PR #{row['representative_pr_number']}")
-        matched = row.get("matched_member_pr_numbers") or []
-        if matched:
-            lines.append(f"   matched members: {', '.join(f'#{number}' for number in matched)}")
-        if row.get("reason"):
-            lines.append(f"   reason: {row['reason']}")
-    return "\n".join(lines)
 
 
-def format_cluster(result: Mapping[str, Any]) -> str:
-    cluster = result["cluster"]
-    lines = [
-        f"Cluster {cluster['cluster_id']}",
-        f"Representative PR: #{cluster['representative_pr_number']}",
-        f"Members: {result.get('member_count', len(result['members']))}",
-        f"Average similarity: {cluster['average_similarity']:.2f}",
-        cluster["summary"],
-        "",
-        "Members:",
+
+def _assigned_cluster_columns() -> list[TableColumn]:
+    return [
+        TableColumn("cluster_id", lambda row: _display(row.get("cluster_id"))),
+        TableColumn("representative_pr", lambda row: _display(row.get("representative_pr"))),
+        TableColumn("size", lambda row: _display(row.get("size"))),
+        TableColumn("avg_similarity", lambda row: _fmt_float(row.get("avg_similarity"))),
+        TableColumn("summary", lambda row: _truncate(_display(row.get("summary")), 54)),
     ]
-    for member in result["members"]:
-        suffix = " (representative)" if member["member_role"] == "representative" else ""
-        title = member.get("title") or ""
-        lines.append(f"- PR #{member['pr_number']}{suffix}: {title}")
-    return "\n".join(lines)
 
 
-def format_cluster_list(result: Mapping[str, Any]) -> str:
-    lines = [
-        f"Repo: {result['repo']}",
-        f"Active snapshot: {result['snapshot_id']}",
-        f"Clusters returned: {result.get('cluster_count', len(result.get('clusters') or []))}",
-        "",
-        "Clusters:",
+
+def _candidate_cluster_columns() -> list[TableColumn]:
+    return [
+        TableColumn("cluster_id", lambda row: _display(row.get("cluster_id"))),
+        TableColumn("score", lambda row: _fmt_float(row.get("score"))),
+        TableColumn("assigned", lambda row: _yes_no(row.get("assigned"))),
+        TableColumn("representative_pr", lambda row: _display(row.get("representative_pr"))),
+        TableColumn("matched_members", lambda row: _display(row.get("matched_members") or "-")),
+        TableColumn("reason", lambda row: _truncate(_display(row.get("reason")), 48)),
     ]
-    clusters = result.get("clusters") or []
-    if not clusters:
-        lines.append("- none")
-        return "\n".join(lines)
-    for index, cluster in enumerate(clusters, start=1):
-        lines.append(
-            f"{cluster.get('rank', index)}. {cluster['cluster_id']}  representative=PR #{cluster['representative_pr_number']}  "
-            f"size={cluster['cluster_size']} avg={cluster['average_similarity']:.2f}"
-        )
-        if cluster.get("representative_title"):
-            lines.append(f"   {cluster['representative_title']}")
-        if cluster.get("summary"):
-            lines.append(f"   {cluster['summary']}")
-    return "\n".join(lines)
+
+
+
+def _cluster_member_columns() -> list[TableColumn]:
+    return [
+        TableColumn("pr", lambda row: _display(row.get("pr"))),
+        TableColumn("role", lambda row: _display(row.get("role"))),
+        TableColumn("title", lambda row: _truncate(_display(row.get("title")), 68)),
+    ]
+
+
+
+def _cluster_list_columns() -> list[TableColumn]:
+    return [
+        TableColumn("rank", lambda row: _display(row.get("rank"))),
+        TableColumn("cluster_id", lambda row: _display(row.get("cluster_id"))),
+        TableColumn("representative_pr", lambda row: _display(row.get("representative_pr"))),
+        TableColumn("size", lambda row: _display(row.get("size"))),
+        TableColumn("avg_similarity", lambda row: _fmt_float(row.get("avg_similarity"))),
+        TableColumn("title", lambda row: _truncate(_display(row.get("title")), 28)),
+        TableColumn("summary", lambda row: _truncate(_display(row.get("summary")), 38)),
+    ]
+
+
+
+def _issue_cluster_columns() -> list[TableColumn]:
+    return [
+        TableColumn("rank", lambda row: _display(row.get("rank"))),
+        TableColumn("cluster_id", lambda row: _display(row.get("cluster_id"))),
+        TableColumn("issue", lambda row: _display(row.get("canonical_issue_number") or "-")),
+        TableColumn("canonical_pr", lambda row: _display(row.get("canonical_pr_number") or "-")),
+        TableColumn("prs", lambda row: _display(row.get("pr_count") or 0)),
+        TableColumn("status", lambda row: _display(row.get("status") or "-")),
+        TableColumn("confidence", lambda row: _fmt_float(row.get("confidence"))),
+        TableColumn("title", lambda row: _truncate(_display(row.get("title")), 30)),
+        TableColumn("summary", lambda row: _truncate(_display(row.get("summary")), 38)),
+    ]
+
+
+
+def _issue_member_columns() -> list[TableColumn]:
+    return [
+        TableColumn("number", lambda row: _display(row.get("number"))),
+        TableColumn("state", lambda row: _display(row.get("state") or "-")),
+        TableColumn("author", lambda row: _display(row.get("author_login") or "-")),
+        TableColumn("title", lambda row: _truncate(_display(row.get("title")), 52)),
+    ]
+
+
+
+def _issue_pr_columns() -> list[TableColumn]:
+    return [
+        TableColumn("number", lambda row: _display(row.get("number"))),
+        TableColumn("role", lambda row: _display(row.get("role") or "-")),
+        TableColumn("author", lambda row: _display(row.get("author_login") or "-")),
+        TableColumn("state", lambda row: _display(row.get("state") or "-")),
+        TableColumn("merged", lambda row: _yes_no(row.get("merged"))),
+        TableColumn("draft", lambda row: _yes_no(row.get("draft"))),
+        TableColumn("title", lambda row: _truncate(_display(row.get("title")), 46)),
+    ]
+
+
+
+def _issue_for_pr_columns() -> list[TableColumn]:
+    return [
+        TableColumn("cluster_id", lambda row: _display(row.get("cluster_id"))),
+        TableColumn("role", lambda row: _display(row.get("membership_role") or "-")),
+        TableColumn("issue", lambda row: _display(row.get("canonical_issue_number") or "-")),
+        TableColumn("canonical_pr", lambda row: _display(row.get("canonical_pr_number") or "-")),
+        TableColumn("status", lambda row: _display(row.get("status") or "-")),
+        TableColumn("confidence", lambda row: _fmt_float(row.get("confidence"))),
+        TableColumn("title", lambda row: _truncate(_display(row.get("title")), 34)),
+    ]
+
+
+
+def _duplicate_pr_columns() -> list[TableColumn]:
+    return [
+        TableColumn("rank", lambda row: _display(row.get("rank"))),
+        TableColumn("cluster_id", lambda row: _display(row.get("cluster_id"))),
+        TableColumn("target_issue", lambda row: _display(row.get("target_issue_number") or "-")),
+        TableColumn("canonical_pr", lambda row: _display(row.get("canonical_pr_number") or "-")),
+        TableColumn("duplicates", lambda row: _join_numbers(row.get("duplicate_pr_numbers") or [])),
+        TableColumn("reason", lambda row: _truncate(_display(row.get("reason")), 48)),
+    ]
+
+
+
+def _contributor_columns() -> list[TableColumn]:
+    return [
+        TableColumn("rank", lambda row: _display(row.get("rank"))),
+        TableColumn("author", lambda row: _display(row.get("author_login"))),
+        TableColumn("association", lambda row: _display(row.get("repo_association") or "-")),
+        TableColumn("snapshot_prs", lambda row: _display(row.get("snapshot_pr_count") or 0)),
+        TableColumn("snapshot_issues", lambda row: _display(row.get("snapshot_issue_count") or 0)),
+        TableColumn("first_seen", lambda row: _yes_no(row.get("first_seen_in_snapshot"))),
+        TableColumn("risk", lambda row: _display(row.get("automation_risk_signal") or "-")),
+        TableColumn("note", lambda row: _truncate(_display(row.get("heuristic_note")), 42)),
+    ]
+
+
+
+def _contributor_pr_example_columns() -> list[TableColumn]:
+    return [
+        TableColumn("number", lambda row: _display(row.get("number"))),
+        TableColumn("state", lambda row: _display(row.get("state") or "-")),
+        TableColumn("merged", lambda row: _yes_no(row.get("merged"))),
+        TableColumn("draft", lambda row: _yes_no(row.get("draft"))),
+        TableColumn("title", lambda row: _truncate(_display(row.get("title")), 58)),
+    ]
+
+
+
+def _contributor_issue_example_columns() -> list[TableColumn]:
+    return [
+        TableColumn("number", lambda row: _display(row.get("number"))),
+        TableColumn("state", lambda row: _display(row.get("state") or "-")),
+        TableColumn("title", lambda row: _truncate(_display(row.get("title")), 64)),
+    ]
+
+
+
+def _issue_surface_summary(row: dict[str, Any]) -> str:
+    if not row.get("available"):
+        return "unavailable"
+    return (
+        f"variant={row.get('variant_used') or '-'} clusters={row.get('cluster_count', 0)} "
+        f"duplicate_prs={row.get('duplicate_pr_count', 0)}"
+    )
+
+
+
+def _contributor_surface_summary(row: dict[str, Any]) -> str:
+    if not row.get("available"):
+        return "unavailable"
+    return f"contributors={row.get('contributor_count', 0)}"
+
+
+
+def _cluster_lookup_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for row in payload.get("assigned_clusters") or []:
+        rows.append({"kind": "assigned", **row})
+    for row in payload.get("candidate_clusters") or []:
+        rows.append({"kind": "candidate", **row})
+    return rows
+
+
+
+def _deduped_cluster_ids(rows: list[dict[str, Any]]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for row in rows:
+        cluster_id = row.get("cluster_id")
+        if not cluster_id or cluster_id in seen:
+            continue
+        seen.add(str(cluster_id))
+        ordered.append(str(cluster_id))
+    return ordered
+
+
+
+def _shared_label(row: dict[str, Any]) -> str:
+    shared_files = row.get("shared_filenames") or []
+    if shared_files:
+        return _csv(shared_files[:3])
+    shared_directories = row.get("shared_directories") or []
+    if shared_directories:
+        return _csv(shared_directories[:3])
+    return "-"
+
+
+
+def _first(values: Any) -> Any:
+    if isinstance(values, list) and values:
+        return values[0]
+    return None
+
+
+
+def _display(value: Any) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, bool):
+        return _yes_no(value)
+    return str(value)
+
+
+
+def _fmt_float(value: Any) -> str:
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return "-"
+
+
+
+def _yes_no(value: Any) -> str:
+    return "yes" if bool(value) else "no"
+
+
+
+def _csv(values: list[Any]) -> str:
+    filtered = [str(value) for value in values if value is not None and str(value)]
+    return ", ".join(filtered) if filtered else "-"
+
+
+
+def _join_numbers(values: list[Any]) -> str:
+    filtered = [f"#{value}" for value in values if value is not None]
+    return ", ".join(filtered) if filtered else "-"
+
+
+
+def _truncate(value: str, width: int) -> str:
+    if len(value) <= width:
+        return value
+    return value[: width - 1].rstrip() + "…"

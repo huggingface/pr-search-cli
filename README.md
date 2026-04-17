@@ -1,6 +1,6 @@
 # pr-search-cli
 
-Thin CLI client for the PR similarity API.
+Standalone CLI client for the PR search API.
 
 Default deployment target:
 
@@ -12,68 +12,89 @@ Default deployment target:
 Run without installing permanently:
 
 ```bash
-uvx pr-search-cli repo status
-uvx pr-search-cli analysis status
-uvx pr-search-cli analysis pr 67144
-uvx pr-search-cli similar 67144
-uvx pr-search-cli clusters 67144
-uvx pr-search-cli cluster list --limit 20
+uvx pr-search-cli status
+uvx pr-search-cli code similar 67144
+uvx pr-search-cli code clusters for-pr 67144
+uvx pr-search-cli issues list
+uvx pr-search-cli contributors show alice
 ```
 
 Run the `pr-search` script from this package explicitly:
 
 ```bash
-uvx --from pr-search-cli pr-search repo status
+uvx --from pr-search-cli pr-search status
 ```
 
-## Commands
+## CLI overview
 
 ```text
-pr-search repo status
-pr-search analysis status
-pr-search analysis pr <number>
-pr-search analysis meta-bugs
-pr-search analysis meta-bug <cluster-id>
-pr-search analysis duplicate-prs
-pr-search analysis best
-pr-search similar <number>
-pr-search clusters <number>
-pr-search cluster list
-pr-search cluster view <cluster-id>
+pr-search status
+
+pr-search code status
+pr-search code similar <pr-number>
+pr-search code clusters list
+pr-search code clusters show <cluster-id>
+pr-search code clusters for-pr <pr-number>
+
+pr-search issues status
+pr-search issues list
+pr-search issues show <cluster-id>
+pr-search issues for-pr <pr-number>
+pr-search issues contains-pr <pr-number> [cluster-id]
+pr-search issues duplicate-prs
+pr-search issues best
+
+pr-search contributors status
+pr-search contributors list
+pr-search contributors show <login>
+pr-search contributors risk <login>
 ```
 
-Useful flags:
+The old `repo ...`, `similar`, `clusters`, `cluster ...`, and `analysis ...`
+commands are still accepted as hidden compatibility aliases.
+
+## Useful flags
+
+Global flags:
 
 - `--base-url`
 - `-R, --repo`
-- `--json`
+- `--format text|json|jsonl|ids`
+- `--json` (compatibility alias for `--format json`)
 
-`pr similar` and `pr clusters` also support:
+Lookup commands also support:
 
 - `--mode auto|indexed|live`
+
+Issue-cluster commands also support:
+
+- `--variant auto|hybrid|deterministic`
 
 ## Examples
 
 ```bash
-pr-search repo status
-pr-search analysis status
-pr-search analysis pr 67144
-pr-search similar 67144
-pr-search clusters 67144
-pr-search cluster list --limit 20
-pr-search --json similar 67144 --mode live
-pr-search --base-url http://127.0.0.1:7860 repo status
+pr-search status
+pr-search code status
+pr-search code similar 67144 --mode live
+pr-search code clusters list --limit 20
+pr-search issues list --variant auto
+pr-search issues for-pr 67144
+pr-search issues contains-pr 67144 issue-cluster-44861-3
+pr-search contributors list --format jsonl
+pr-search contributors risk alice --format json
+pr-search --base-url http://127.0.0.1:7860 status
 ```
 
-`similar` and `clusters` use `--mode auto` by default:
+## Output formats
 
-- `auto`
-  - use indexed lookup when the PR is already in the active snapshot
-  - otherwise fall back to live lookup via the server's configured live source
-- `indexed`
-  - require the PR to exist in the active snapshot
-- `live`
-  - force live lookup
+- `text`
+  - stable key/value blocks and tables for humans and shell users
+- `json`
+  - full API payload
+- `jsonl`
+  - one JSON object per list row when the command returns a collection
+- `ids`
+  - just the primary identifiers from list-like commands
 
 ## Publish
 

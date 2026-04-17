@@ -15,66 +15,6 @@ class PrSearchApiClient:
         owner, name = _split_repo(repo)
         return self._get_json(f"/v1/repos/{owner}/{name}/status")
 
-    def get_analysis_status(self, repo: str, *, variant: str) -> dict[str, Any]:
-        owner, name = _split_repo(repo)
-        return self._get_json(
-            f"/v1/repos/{owner}/{name}/analysis/status",
-            params={"variant": variant},
-        )
-
-    def get_pr_analysis(self, repo: str, *, number: int, variant: str) -> dict[str, Any]:
-        owner, name = _split_repo(repo)
-        return self._get_json(
-            f"/v1/repos/{owner}/{name}/pulls/{number}/analysis",
-            params={"variant": variant},
-        )
-
-    def list_analysis_meta_bugs(
-        self,
-        repo: str,
-        *,
-        limit: int | None,
-        variant: str,
-    ) -> dict[str, Any]:
-        owner, name = _split_repo(repo)
-        return self._get_json(
-            f"/v1/repos/{owner}/{name}/analysis/meta-bugs",
-            params=_analysis_params(limit=limit, variant=variant),
-        )
-
-    def get_analysis_meta_bug(
-        self,
-        repo: str,
-        *,
-        cluster_id: str,
-        variant: str,
-    ) -> dict[str, Any]:
-        owner, name = _split_repo(repo)
-        return self._get_json(
-            f"/v1/repos/{owner}/{name}/analysis/meta-bugs/{cluster_id}",
-            params={"variant": variant},
-        )
-
-    def list_analysis_duplicate_prs(
-        self,
-        repo: str,
-        *,
-        limit: int | None,
-        variant: str,
-    ) -> dict[str, Any]:
-        owner, name = _split_repo(repo)
-        return self._get_json(
-            f"/v1/repos/{owner}/{name}/analysis/duplicate-prs",
-            params=_analysis_params(limit=limit, variant=variant),
-        )
-
-    def get_analysis_best(self, repo: str, *, variant: str) -> dict[str, Any]:
-        owner, name = _split_repo(repo)
-        return self._get_json(
-            f"/v1/repos/{owner}/{name}/analysis/best",
-            params={"variant": variant},
-        )
-
     def get_similar(
         self,
         repo: str,
@@ -86,7 +26,7 @@ class PrSearchApiClient:
         owner, name = _split_repo(repo)
         return self._get_json(
             f"/v1/repos/{owner}/{name}/pulls/{number}/similar",
-            params=_lookup_params(limit, mode=mode),
+            params=_lookup_params(limit=limit, mode=mode),
         )
 
     def get_clusters(
@@ -100,12 +40,13 @@ class PrSearchApiClient:
         owner, name = _split_repo(repo)
         return self._get_json(
             f"/v1/repos/{owner}/{name}/pulls/{number}/clusters",
-            params=_lookup_params(limit, mode=mode),
+            params=_lookup_params(limit=limit, mode=mode),
         )
 
     def get_cluster(self, repo: str, *, cluster_id: str) -> dict[str, Any]:
         owner, name = _split_repo(repo)
-        return self._get_json(f"/v1/repos/{owner}/{name}/clusters/{cluster_id}")
+        encoded_cluster_id = urllib.parse.quote(cluster_id, safe="")
+        return self._get_json(f"/v1/repos/{owner}/{name}/clusters/{encoded_cluster_id}")
 
     def list_clusters(self, repo: str, *, limit: int | None) -> dict[str, Any]:
         owner, name = _split_repo(repo)
@@ -113,6 +54,111 @@ class PrSearchApiClient:
             f"/v1/repos/{owner}/{name}/clusters",
             params=None if limit is None else {"limit": limit},
         )
+
+    def get_issue_status(self, repo: str, *, variant: str) -> dict[str, Any]:
+        owner, name = _split_repo(repo)
+        return self._get_json(
+            f"/v1/repos/{owner}/{name}/issues/status",
+            params={"variant": variant},
+        )
+
+    def list_issue_clusters(
+        self,
+        repo: str,
+        *,
+        limit: int | None,
+        variant: str,
+    ) -> dict[str, Any]:
+        owner, name = _split_repo(repo)
+        return self._get_json(
+            f"/v1/repos/{owner}/{name}/issues/clusters",
+            params=_variant_params(limit=limit, variant=variant),
+        )
+
+    def get_issue_cluster(
+        self,
+        repo: str,
+        *,
+        cluster_id: str,
+        variant: str,
+    ) -> dict[str, Any]:
+        owner, name = _split_repo(repo)
+        encoded_cluster_id = urllib.parse.quote(cluster_id, safe="")
+        return self._get_json(
+            f"/v1/repos/{owner}/{name}/issues/clusters/{encoded_cluster_id}",
+            params={"variant": variant},
+        )
+
+    def get_issue_clusters_for_pr(
+        self,
+        repo: str,
+        *,
+        number: int,
+        variant: str,
+    ) -> dict[str, Any]:
+        owner, name = _split_repo(repo)
+        return self._get_json(
+            f"/v1/repos/{owner}/{name}/issues/pulls/{number}",
+            params={"variant": variant},
+        )
+
+    def check_issue_membership(
+        self,
+        repo: str,
+        *,
+        number: int,
+        variant: str,
+        cluster_id: str | None,
+    ) -> dict[str, Any]:
+        owner, name = _split_repo(repo)
+        params = {"variant": variant}
+        if cluster_id is not None:
+            params["cluster_id"] = cluster_id
+        return self._get_json(
+            f"/v1/repos/{owner}/{name}/issues/pulls/{number}/membership",
+            params=params,
+        )
+
+    def list_issue_duplicate_prs(
+        self,
+        repo: str,
+        *,
+        limit: int | None,
+        variant: str,
+    ) -> dict[str, Any]:
+        owner, name = _split_repo(repo)
+        return self._get_json(
+            f"/v1/repos/{owner}/{name}/issues/duplicate-prs",
+            params=_variant_params(limit=limit, variant=variant),
+        )
+
+    def get_issue_best(self, repo: str, *, variant: str) -> dict[str, Any]:
+        owner, name = _split_repo(repo)
+        return self._get_json(
+            f"/v1/repos/{owner}/{name}/issues/best",
+            params={"variant": variant},
+        )
+
+    def get_contributor_status(self, repo: str) -> dict[str, Any]:
+        owner, name = _split_repo(repo)
+        return self._get_json(f"/v1/repos/{owner}/{name}/contributors/status")
+
+    def list_contributors(self, repo: str, *, limit: int | None) -> dict[str, Any]:
+        owner, name = _split_repo(repo)
+        return self._get_json(
+            f"/v1/repos/{owner}/{name}/contributors",
+            params=None if limit is None else {"limit": limit},
+        )
+
+    def get_contributor(self, repo: str, *, login: str) -> dict[str, Any]:
+        owner, name = _split_repo(repo)
+        encoded_login = urllib.parse.quote(login, safe="")
+        return self._get_json(f"/v1/repos/{owner}/{name}/contributors/{encoded_login}")
+
+    def get_contributor_risk(self, repo: str, *, login: str) -> dict[str, Any]:
+        owner, name = _split_repo(repo)
+        encoded_login = urllib.parse.quote(login, safe="")
+        return self._get_json(f"/v1/repos/{owner}/{name}/contributors/{encoded_login}/risk")
 
     def _get_json(
         self,
@@ -137,11 +183,13 @@ class PrSearchApiClient:
         return data
 
 
+
 def _split_repo(repo: str) -> tuple[str, str]:
     owner, sep, name = repo.partition("/")
     if not sep or not owner or not name:
         raise RuntimeError(f"expected owner/name repo, got {repo!r}")
     return owner, name
+
 
 
 def _lookup_params(limit: int | None, *, mode: str) -> dict[str, int | str]:
@@ -151,11 +199,13 @@ def _lookup_params(limit: int | None, *, mode: str) -> dict[str, int | str]:
     return params
 
 
-def _analysis_params(limit: int | None, *, variant: str) -> dict[str, int | str]:
+
+def _variant_params(limit: int | None, *, variant: str) -> dict[str, int | str]:
     params: dict[str, int | str] = {"variant": variant}
     if limit is not None:
         params["limit"] = limit
     return params
+
 
 
 def _error_detail(detail: str, *, fallback: str) -> str:

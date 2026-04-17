@@ -14,6 +14,7 @@ RoutePayload = object | tuple[int, object]
 TEST_ENV = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}
 
 
+
 def test_module_help_smoke() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "pr_search_cli", "--help"],
@@ -25,13 +26,26 @@ def test_module_help_smoke() -> None:
 
     assert result.returncode == 0
     assert "usage: pr-search" in result.stdout
-    assert "similar 67144" in result.stdout
-    assert "clusters 67144" in result.stdout
-    assert "cluster list --limit 20" in result.stdout
-    assert "analysis pr 67144" in result.stdout
+    assert "code" in result.stdout
+    assert "issues" in result.stdout
+    assert "contributors" in result.stdout
 
 
-def test_status_and_similar_json() -> None:
+def test_group_without_subcommand_prints_help() -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "pr_search_cli", "issues"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=TEST_ENV,
+    )
+
+    assert result.returncode == 0
+    assert "usage: pr-search issues" in result.stdout
+    assert "contains-pr" in result.stdout
+
+
+def test_status_and_code_similar_json() -> None:
     routes = {
         "/v1/repos/openclaw/openclaw/status": {
             "id": "run-1",
@@ -45,6 +59,22 @@ def test_status_and_similar_json() -> None:
                 "neighbors": 50,
                 "clusters": 7,
                 "cluster_candidates": 12,
+            },
+            "surfaces": {
+                "issues": {
+                    "available": True,
+                    "variant_used": "hybrid",
+                    "llm_enrichment": True,
+                    "generated_at": "2026-04-16T12:10:00Z",
+                    "cluster_count": 3,
+                    "duplicate_pr_count": 2,
+                    "available_variants": ["hybrid"],
+                },
+                "contributors": {
+                    "available": True,
+                    "generated_at": "2026-04-16T12:20:00Z",
+                    "contributor_count": 5,
+                },
             },
         },
         "/v1/repos/openclaw/openclaw/pulls/123/similar?mode=auto&limit=2": {
@@ -62,6 +92,7 @@ def test_status_and_similar_json() -> None:
             "similar_prs": [
                 {
                     "neighbor_pr_number": 99,
+                    "neighbor_title": "Fix CI cache",
                     "similarity": 0.92,
                     "content_similarity": 0.91,
                     "size_similarity": 0.95,
@@ -76,7 +107,7 @@ def test_status_and_similar_json() -> None:
     }
     with _json_server(routes) as base_url:
         status = subprocess.run(
-            [sys.executable, "-m", "pr_search_cli", "--base-url", base_url, "repo", "status"],
+            [sys.executable, "-m", "pr_search_cli", "--base-url", base_url, "status"],
             capture_output=True,
             text=True,
             check=False,
@@ -89,7 +120,9 @@ def test_status_and_similar_json() -> None:
                 "pr_search_cli",
                 "--base-url",
                 base_url,
-                "--json",
+                "--format",
+                "json",
+                "code",
                 "similar",
                 "123",
                 "--limit",
@@ -102,150 +135,396 @@ def test_status_and_similar_json() -> None:
         )
 
     assert status.returncode == 0
-    assert "Repo: openclaw/openclaw" in status.stdout
+    assert "SURFACES" in status.stdout
+    assert "contributors=5" in status.stdout
     payload = json.loads(similar.stdout)
     assert payload["similar_prs"][0]["neighbor_pr_number"] == 99
+    assert payload["similar_prs"][0]["neighbor_title"] == "Fix CI cache"
 
 
-def test_analysis_status_and_pr_text() -> None:
+
+def test_issue_commands_text_and_ids() -> None:
     routes = {
-        "/v1/repos/openclaw/openclaw/analysis/status?variant=auto": {
+        "/v1/repos/openclaw/openclaw/issues/status?variant=auto": {
             "repo": "openclaw/openclaw",
             "snapshot_id": "20260416T120000Z",
-            "run_id": "run-1",
             "variant_requested": "auto",
+            "variant_used": "hybrid",
             "available": True,
-            "variant_used": "hybrid",
+            "available_variants": ["hybrid"],
             "llm_enrichment": True,
             "generated_at": "2026-04-16T12:00:00Z",
-            "counts": {
-                "meta_bugs": 3,
-                "duplicate_issues": 1,
-                "duplicate_prs": 2,
-            },
+            "counts": {"meta_bugs": 1, "duplicate_issues": 0, "duplicate_prs": 1},
         },
-        "/v1/repos/openclaw/openclaw/pulls/123/analysis?variant=auto": {
+        "/v1/repos/openclaw/openclaw/issues/clusters?variant=auto&limit=2": {
             "repo": "openclaw/openclaw",
             "snapshot_id": "20260416T120000Z",
-            "run_id": "run-1",
             "variant_requested": "auto",
             "variant_used": "hybrid",
+            "available": True,
             "llm_enrichment": True,
             "generated_at": "2026-04-16T12:00:00Z",
-            "pr_number": 123,
-            "found": True,
-            "meta_bug": {
-                "rank": 1,
-                "cluster_id": "cluster-123-2",
-                "summary": "CI regression",
-                "status": "open",
-                "confidence": 0.93,
-                "canonical_issue_number": 100,
-                "canonical_pr_number": 123,
-                "issue_numbers": [100],
-                "pr_numbers": [123, 124],
-                "evidence_types": ["closing_reference"],
-            },
-            "duplicate_pr": {
-                "cluster_id": "cluster-123-2",
-                "canonical_pr_number": 123,
-                "duplicate_pr_numbers": [124],
-                "target_issue_number": 100,
-                "reason": "Same fix path.",
-            },
-        },
-    }
-    with _json_server(routes) as base_url:
-        status = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pr_search_cli",
-                "--base-url",
-                base_url,
-                "analysis",
-                "status",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            env=TEST_ENV,
-        )
-        pr = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pr_search_cli",
-                "--base-url",
-                base_url,
-                "analysis",
-                "pr",
-                "123",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            env=TEST_ENV,
-        )
-
-    assert status.returncode == 0
-    assert "Variant used: hybrid" in status.stdout
-    assert "LLM enrichment: yes" in status.stdout
-    assert pr.returncode == 0
-    assert "Meta bug: cluster-123-2" in pr.stdout
-    assert "Duplicates: #124" in pr.stdout
-
-
-def test_analysis_meta_bugs_and_best_json() -> None:
-    routes = {
-        "/v1/repos/openclaw/openclaw/analysis/meta-bugs?variant=auto&limit=2": {
-            "repo": "openclaw/openclaw",
-            "snapshot_id": "20260416T120000Z",
-            "run_id": "run-1",
-            "variant_requested": "auto",
-            "variant_used": "hybrid",
-            "llm_enrichment": True,
-            "generated_at": "2026-04-16T12:00:00Z",
-            "meta_bug_count": 1,
-            "meta_bugs": [
+            "cluster_count": 1,
+            "clusters": [
                 {
                     "rank": 1,
-                    "cluster_id": "cluster-123-2",
-                    "summary": "CI regression",
+                    "cluster_id": "issue-cluster-100-2",
+                    "title": "Tokenizer issue",
+                    "summary": "Tokenizer issue cluster",
                     "status": "open",
                     "confidence": 0.93,
                     "canonical_issue_number": 100,
                     "canonical_pr_number": 123,
-                    "issue_numbers": [100],
-                    "pr_numbers": [123, 124],
-                    "evidence_types": ["closing_reference"],
+                    "issue_count": 1,
+                    "pr_count": 2,
                 }
             ],
         },
-        "/v1/repos/openclaw/openclaw/analysis/best?variant=auto": {
+        "/v1/repos/openclaw/openclaw/issues/clusters/issue-cluster-100-2?variant=auto": {
             "repo": "openclaw/openclaw",
             "snapshot_id": "20260416T120000Z",
-            "run_id": "run-1",
             "variant_requested": "auto",
             "variant_used": "hybrid",
+            "available": True,
+            "llm_enrichment": True,
+            "generated_at": "2026-04-16T12:00:00Z",
+            "cluster_id": "issue-cluster-100-2",
+            "found": True,
+            "cluster": {
+                "cluster_id": "issue-cluster-100-2",
+                "title": "Tokenizer issue",
+                "summary": "Tokenizer issue cluster",
+                "status": "open",
+                "confidence": 0.93,
+                "canonical_issue_number": 100,
+                "canonical_pr_number": 123,
+                "evidence_types": ["closing_reference"],
+            },
+            "issues": [
+                {
+                    "number": 100,
+                    "state": "open",
+                    "author_login": "alice",
+                    "title": "Tokenizer issue",
+                }
+            ],
+            "pull_requests": [
+                {
+                    "number": 123,
+                    "role": "canonical",
+                    "author_login": "alice",
+                    "state": "open",
+                    "merged": False,
+                    "draft": False,
+                    "title": "Fix tokenizer",
+                },
+                {
+                    "number": 124,
+                    "role": "member",
+                    "author_login": "bob",
+                    "state": "open",
+                    "merged": False,
+                    "draft": False,
+                    "title": "Fix tokenizer cache",
+                },
+            ],
+        },
+        "/v1/repos/openclaw/openclaw/issues/pulls/123?variant=auto": {
+            "repo": "openclaw/openclaw",
+            "snapshot_id": "20260416T120000Z",
+            "variant_requested": "auto",
+            "variant_used": "hybrid",
+            "available": True,
+            "llm_enrichment": True,
+            "generated_at": "2026-04-16T12:00:00Z",
+            "pr_number": 123,
+            "found": True,
+            "cluster_count": 1,
+            "clusters": [
+                {
+                    "cluster_id": "issue-cluster-100-2",
+                    "membership_role": "canonical",
+                    "canonical_issue_number": 100,
+                    "canonical_pr_number": 123,
+                    "status": "open",
+                    "confidence": 0.93,
+                    "title": "Tokenizer issue",
+                }
+            ],
+        },
+        "/v1/repos/openclaw/openclaw/issues/pulls/123/membership?variant=auto&cluster_id=issue-cluster-100-2": {
+            "repo": "openclaw/openclaw",
+            "snapshot_id": "20260416T120000Z",
+            "variant_requested": "auto",
+            "variant_used": "hybrid",
+            "available": True,
+            "llm_enrichment": True,
+            "generated_at": "2026-04-16T12:00:00Z",
+            "pr_number": 123,
+            "found": True,
+            "cluster_count": 1,
+            "clusters": [
+                {"cluster_id": "issue-cluster-100-2", "membership_role": "canonical"}
+            ],
+            "cluster_id": "issue-cluster-100-2",
+            "matched": True,
+            "matching_cluster_ids": ["issue-cluster-100-2"],
+            "membership": {"cluster_id": "issue-cluster-100-2", "membership_role": "canonical"},
+        },
+        "/v1/repos/openclaw/openclaw/issues/duplicate-prs?variant=auto&limit=2": {
+            "repo": "openclaw/openclaw",
+            "snapshot_id": "20260416T120000Z",
+            "variant_requested": "auto",
+            "variant_used": "hybrid",
+            "available": True,
+            "llm_enrichment": True,
+            "generated_at": "2026-04-16T12:00:00Z",
+            "duplicate_pr_count": 1,
+            "duplicate_prs": [
+                {
+                    "rank": 1,
+                    "cluster_id": "issue-cluster-100-2",
+                    "target_issue_number": 100,
+                    "canonical_pr_number": 123,
+                    "duplicate_pr_numbers": [124],
+                    "reason": "Same fix path.",
+                }
+            ],
+        },
+        "/v1/repos/openclaw/openclaw/issues/best?variant=auto": {
+            "repo": "openclaw/openclaw",
+            "snapshot_id": "20260416T120000Z",
+            "variant_requested": "auto",
+            "variant_used": "hybrid",
+            "available": True,
             "llm_enrichment": True,
             "generated_at": "2026-04-16T12:00:00Z",
             "best_issue": {
-                "cluster_id": "cluster-123-2",
                 "issue_number": 100,
-                "reason": "Best issue.",
+                "title": "Tokenizer issue",
+                "cluster_id": "issue-cluster-100-2",
                 "score": 0.91,
+                "reason": "Best issue.",
             },
             "best_pr": {
-                "cluster_id": "cluster-123-2",
                 "pr_number": 123,
-                "reason": "Best PR.",
+                "title": "Fix tokenizer",
+                "cluster_id": "issue-cluster-100-2",
                 "score": 0.92,
+                "reason": "Best PR.",
             },
         },
     }
     with _json_server(routes) as base_url:
-        meta_bugs = subprocess.run(
+        list_ids = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pr_search_cli",
+                "--base-url",
+                base_url,
+                "--format",
+                "ids",
+                "issues",
+                "list",
+                "--limit",
+                "2",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=TEST_ENV,
+        )
+        show = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pr_search_cli",
+                "--base-url",
+                base_url,
+                "issues",
+                "show",
+                "issue-cluster-100-2",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=TEST_ENV,
+        )
+        membership = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pr_search_cli",
+                "--base-url",
+                base_url,
+                "issues",
+                "contains-pr",
+                "123",
+                "issue-cluster-100-2",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=TEST_ENV,
+        )
+
+    assert list_ids.returncode == 0
+    assert list_ids.stdout.strip() == "issue-cluster-100-2"
+    assert show.returncode == 0
+    assert "PULL REQUESTS" in show.stdout
+    assert "Tokenizer issue" in show.stdout
+    assert membership.returncode == 0
+    assert "matched" in membership.stdout
+    assert "yes" in membership.stdout
+
+
+def test_contributor_commands_text_jsonl_and_legacy_alias() -> None:
+    routes = {
+        "/v1/repos/openclaw/openclaw/contributors/status": {
+            "repo": "openclaw/openclaw",
+            "snapshot_id": "20260416T120000Z",
+            "available": True,
+            "generated_at": "2026-04-16T12:30:00Z",
+            "window_days": 42,
+            "contributor_count": 1,
+        },
+        "/v1/repos/openclaw/openclaw/contributors?limit=2": {
+            "repo": "openclaw/openclaw",
+            "snapshot_id": "20260416T120000Z",
+            "available": True,
+            "generated_at": "2026-04-16T12:30:00Z",
+            "contributor_count": 1,
+            "contributors": [
+                {
+                    "rank": 1,
+                    "author_login": "alice",
+                    "repo_association": "CONTRIBUTOR",
+                    "snapshot_pr_count": 1,
+                    "snapshot_issue_count": 0,
+                    "first_seen_in_snapshot": True,
+                    "automation_risk_signal": "low",
+                    "heuristic_note": "Looks normal.",
+                }
+            ],
+        },
+        "/v1/repos/openclaw/openclaw/contributors/alice": {
+            "repo": "openclaw/openclaw",
+            "snapshot_id": "20260416T120000Z",
+            "available": True,
+            "generated_at": "2026-04-16T12:30:00Z",
+            "author_login": "alice",
+            "found": True,
+            "summary": {
+                "author_login": "alice",
+                "name": "Alice",
+                "profile_url": "https://github.com/alice",
+                "repo_association": "CONTRIBUTOR",
+                "first_seen_in_snapshot": True,
+                "new_to_repo": True,
+                "snapshot_pr_count": 1,
+                "snapshot_issue_count": 0,
+                "follow_through_score": 3,
+                "breadth_score": 2,
+                "automation_risk_signal": "low",
+                "heuristic_note": "Looks normal.",
+                "account_age_days": 120,
+                "public_pr_count_42d": 5,
+                "public_repo_count_42d": 2,
+            },
+            "risk": {
+                "automation_risk_signal": "low",
+                "heuristic_note": "Looks normal.",
+                "follow_through_score": 3,
+                "breadth_score": 2,
+                "account_age_days": 120,
+                "public_pr_count_42d": 5,
+                "public_repo_count_42d": 2,
+                "report_reason": "new contributor",
+            },
+            "contributor": {
+                "examples": {
+                    "pull_requests": [
+                        {
+                            "number": 123,
+                            "title": "Fix tokenizer",
+                            "state": "open",
+                            "merged": False,
+                            "draft": False,
+                        }
+                    ],
+                    "issues": [],
+                }
+            },
+        },
+        "/v1/repos/openclaw/openclaw/contributors/alice/risk": {
+            "repo": "openclaw/openclaw",
+            "snapshot_id": "20260416T120000Z",
+            "available": True,
+            "generated_at": "2026-04-16T12:30:00Z",
+            "author_login": "alice",
+            "found": True,
+            "risk_available": True,
+            "risk": {
+                "automation_risk_signal": "low",
+                "heuristic_note": "Looks normal.",
+                "follow_through_score": 3,
+                "breadth_score": 2,
+                "account_age_days": 120,
+                "public_pr_count_42d": 5,
+                "public_repo_count_42d": 2,
+                "report_reason": "new contributor",
+            },
+        },
+        "/v1/repos/openclaw/openclaw/issues/clusters?variant=auto&limit=2": {
+            "repo": "openclaw/openclaw",
+            "snapshot_id": "20260416T120000Z",
+            "variant_requested": "auto",
+            "variant_used": "hybrid",
+            "available": True,
+            "llm_enrichment": True,
+            "generated_at": "2026-04-16T12:00:00Z",
+            "cluster_count": 1,
+            "clusters": [{"cluster_id": "issue-cluster-100-2"}],
+        },
+    }
+    with _json_server(routes) as base_url:
+        contributor_list = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pr_search_cli",
+                "--base-url",
+                base_url,
+                "--format",
+                "jsonl",
+                "contributors",
+                "list",
+                "--limit",
+                "2",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=TEST_ENV,
+        )
+        contributor_show = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pr_search_cli",
+                "--base-url",
+                base_url,
+                "contributors",
+                "show",
+                "alice",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=TEST_ENV,
+        )
+        risk = subprocess.run(
             [
                 sys.executable,
                 "-m",
@@ -253,6 +532,22 @@ def test_analysis_meta_bugs_and_best_json() -> None:
                 "--base-url",
                 base_url,
                 "--json",
+                "contributors",
+                "risk",
+                "alice",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=TEST_ENV,
+        )
+        legacy = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pr_search_cli",
+                "--base-url",
+                base_url,
                 "analysis",
                 "meta-bugs",
                 "--limit",
@@ -263,137 +558,16 @@ def test_analysis_meta_bugs_and_best_json() -> None:
             check=False,
             env=TEST_ENV,
         )
-        best = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pr_search_cli",
-                "--base-url",
-                base_url,
-                "--json",
-                "analysis",
-                "best",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            env=TEST_ENV,
-        )
 
-    assert meta_bugs.returncode == 0
-    assert json.loads(meta_bugs.stdout)["meta_bugs"][0]["cluster_id"] == "cluster-123-2"
-    assert best.returncode == 0
-    assert json.loads(best.stdout)["best_pr"]["cluster_id"] == "cluster-123-2"
-
-
-def test_clusters_json() -> None:
-    routes = {
-        "/v1/repos/openclaw/openclaw/pulls/123/clusters?mode=auto&limit=2": {
-            "repo": "openclaw/openclaw",
-            "snapshot_id": "20260416T120000Z",
-            "run_id": "run-1",
-            "assigned_cluster_count": 1,
-            "candidate_cluster_count": 1,
-            "query": {
-                "pr_number": 123,
-                "mode_requested": "auto",
-                "mode_used": "indexed",
-                "source": "active_index",
-            },
-            "pr": {"pr_number": 123, "title": "Fix CI"},
-            "assigned_clusters": [
-                {
-                    "cluster_id": "pr-scope-99-2",
-                    "representative_pr_number": 99,
-                    "cluster_size": 2,
-                    "average_similarity": 0.91,
-                    "summary": "CI-related changes.",
-                    "shared_filenames": ["src/ci.py"],
-                    "shared_directories": [],
-                }
-            ],
-            "candidate_clusters": [
-                {
-                    "cluster_id": "pr-scope-99-2",
-                    "candidate_score": 0.92,
-                    "assigned": True,
-                    "representative_pr_number": 99,
-                    "matched_member_pr_numbers": [99],
-                    "reason": "overlapping files",
-                }
-            ],
-        }
-    }
-    with _json_server(routes) as base_url:
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pr_search_cli",
-                "--base-url",
-                base_url,
-                "--json",
-                "clusters",
-                "123",
-                "--limit",
-                "2",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            env=TEST_ENV,
-        )
-
-    assert result.returncode == 0
-    payload = json.loads(result.stdout)
-    assert payload["assigned_clusters"][0]["cluster_id"] == "pr-scope-99-2"
-
-
-def test_cluster_list_text() -> None:
-    routes = {
-        "/v1/repos/openclaw/openclaw/clusters?limit=2": {
-            "repo": "openclaw/openclaw",
-            "snapshot_id": "20260416T120000Z",
-            "run_id": "run-1",
-            "cluster_count": 1,
-            "clusters": [
-                {
-                    "rank": 1,
-                    "cluster_id": "pr-scope-99-2",
-                    "representative_pr_number": 99,
-                    "cluster_size": 2,
-                    "average_similarity": 0.91,
-                    "summary": "CI-related changes.",
-                    "representative_title": "Fix CI",
-                    "shared_filenames": ["src/ci.py"],
-                    "shared_directories": [],
-                }
-            ],
-        }
-    }
-    with _json_server(routes) as base_url:
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pr_search_cli",
-                "--base-url",
-                base_url,
-                "cluster",
-                "list",
-                "--limit",
-                "2",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            env=TEST_ENV,
-        )
-
-    assert result.returncode == 0
-    assert "Clusters:" in result.stdout
-    assert "Clusters returned: 1" in result.stdout
-    assert "pr-scope-99-2" in result.stdout
+    assert contributor_list.returncode == 0
+    jsonl_rows = [json.loads(line) for line in contributor_list.stdout.splitlines() if line.strip()]
+    assert jsonl_rows[0]["author_login"] == "alice"
+    assert contributor_show.returncode == 0
+    assert "EXAMPLE PULL REQUESTS" in contributor_show.stdout
+    risk_payload = json.loads(risk.stdout)
+    assert risk_payload["risk"]["automation_risk_signal"] == "low"
+    assert legacy.returncode == 0
+    assert "ISSUE CLUSTERS" in legacy.stdout
 
 
 @contextmanager
@@ -425,6 +599,7 @@ def _json_server(routes: Mapping[str, RoutePayload]):
         server.shutdown()
         thread.join()
         server.server_close()
+
 
 
 def _route_response(payload: RoutePayload) -> tuple[int, object]:
