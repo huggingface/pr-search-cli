@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import sys
 from collections.abc import Callable
 from typing import Any
@@ -28,8 +30,9 @@ from pr_search_cli.format import (
     OutputFormatter,
 )
 
-DEFAULT_BASE_URL = "https://evalstate-openclaw-pr-api.hf.space"
+DEFAULT_FALLBACK_BASE_URL = "https://evalstate-openclaw-pr-api.hf.space"
 DEFAULT_REPO = "openclaw/openclaw"
+BASE_URL_ENV_VAR = "PR_SEARCH_BASE_URL"
 
 Handler = Callable[[PrSearchApiClient, argparse.Namespace], dict[str, Any]]
 
@@ -55,8 +58,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--base-url",
-        default=DEFAULT_BASE_URL,
-        help="API base URL. Defaults to the deployed Hugging Face Space.",
+        default=None,
+        help=(
+            f"API base URL. Defaults to ${BASE_URL_ENV_VAR} when set, otherwise to a deployed "
+            "Hugging Face Space inferred from --repo."
+        ),
     )
     parser.add_argument(
         "-R",
@@ -84,7 +90,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     raw_argv = sys.argv[1:] if argv is None else argv
@@ -95,6 +100,7 @@ def main(argv: list[str] | None = None) -> None:
         if args.format not in {"text", "json"}:
             parser.error("--json cannot be combined with --format jsonl or --format ids")
         args.format = "json"
+    args.base_url = _resolve_base_url(args.base_url, args.repo)
     client = PrSearchApiClient(base_url=args.base_url)
     try:
         handler: Handler = args.handler
@@ -106,11 +112,9 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(1) from exc
 
 
-
 def _add_status_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     status = subparsers.add_parser("status", help="Show repo, code, issue, and contributor status.")
     status.set_defaults(handler=_handle_status, formatter=STATUS_FORMATTER)
-
 
 
 def _add_code_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -133,16 +137,19 @@ def _add_code_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
     for_pr.add_argument("number", type=int, help="Pull request number to query.")
     _add_limit_arg(for_pr)
     _add_mode_arg(for_pr)
-    for_pr.set_defaults(handler=_handle_code_clusters_for_pr, formatter=CODE_CLUSTERS_FOR_PR_FORMATTER)
+    for_pr.set_defaults(
+        handler=_handle_code_clusters_for_pr, formatter=CODE_CLUSTERS_FOR_PR_FORMATTER
+    )
 
     cluster_list = cluster_subparsers.add_parser("list", help="List code clusters.")
     _add_limit_arg(cluster_list)
-    cluster_list.set_defaults(handler=_handle_code_cluster_list, formatter=CODE_CLUSTER_LIST_FORMATTER)
+    cluster_list.set_defaults(
+        handler=_handle_code_cluster_list, formatter=CODE_CLUSTER_LIST_FORMATTER
+    )
 
     show = cluster_subparsers.add_parser("show", help="Show one code cluster.")
     show.add_argument("cluster_id", help="Cluster identifier.")
     show.set_defaults(handler=_handle_code_cluster_show, formatter=CODE_CLUSTER_SHOW_FORMATTER)
-
 
 
 def _add_issue_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -187,27 +194,36 @@ def _add_issue_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
     )
     _add_limit_arg(duplicate_prs)
     _add_variant_arg(duplicate_prs)
-    duplicate_prs.set_defaults(handler=_handle_issue_duplicate_prs, formatter=ISSUE_DUPLICATE_PRS_FORMATTER)
+    duplicate_prs.set_defaults(
+        handler=_handle_issue_duplicate_prs, formatter=ISSUE_DUPLICATE_PRS_FORMATTER
+    )
 
     best = issue_subparsers.add_parser("best", help="Show the best issue and PR picks.")
     _add_variant_arg(best)
     best.set_defaults(handler=_handle_issue_best, formatter=ISSUE_BEST_FORMATTER)
 
 
-
-def _add_contributor_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+def _add_contributor_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     contributors = subparsers.add_parser(
         "contributors",
         help="Browse contributor summaries and automation-risk signals.",
     )
     contributor_subparsers = contributors.add_subparsers(dest="contributor_command", required=True)
 
-    status = contributor_subparsers.add_parser("status", help="Show contributor report availability.")
+    status = contributor_subparsers.add_parser(
+        "status", help="Show contributor report availability."
+    )
     status.set_defaults(handler=_handle_contributor_status, formatter=CONTRIBUTOR_STATUS_FORMATTER)
 
-    contributor_list = contributor_subparsers.add_parser("list", help="List contributors in the report.")
+    contributor_list = contributor_subparsers.add_parser(
+        "list", help="List contributors in the report."
+    )
     _add_limit_arg(contributor_list)
-    contributor_list.set_defaults(handler=_handle_contributor_list, formatter=CONTRIBUTOR_LIST_FORMATTER)
+    contributor_list.set_defaults(
+        handler=_handle_contributor_list, formatter=CONTRIBUTOR_LIST_FORMATTER
+    )
 
     show = contributor_subparsers.add_parser("show", help="Show one contributor summary.")
     show.add_argument("login", help="GitHub login.")
@@ -222,7 +238,6 @@ def _add_limit_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--limit", type=int, default=None, help="Maximum rows to return.")
 
 
-
 def _add_mode_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--mode",
@@ -230,7 +245,6 @@ def _add_mode_arg(parser: argparse.ArgumentParser) -> None:
         default="auto",
         help="Lookup mode. Defaults to auto.",
     )
-
 
 
 def _add_variant_arg(parser: argparse.ArgumentParser) -> None:
@@ -242,15 +256,12 @@ def _add_variant_arg(parser: argparse.ArgumentParser) -> None:
     )
 
 
-
 def _handle_status(client: PrSearchApiClient, args: argparse.Namespace) -> dict[str, Any]:
     return client.get_status(args.repo)
 
 
-
 def _handle_code_similar(client: PrSearchApiClient, args: argparse.Namespace) -> dict[str, Any]:
     return client.get_similar(args.repo, number=args.number, limit=args.limit, mode=args.mode)
-
 
 
 def _handle_code_clusters_for_pr(
@@ -260,35 +271,32 @@ def _handle_code_clusters_for_pr(
     return client.get_clusters(args.repo, number=args.number, limit=args.limit, mode=args.mode)
 
 
-
-def _handle_code_cluster_list(client: PrSearchApiClient, args: argparse.Namespace) -> dict[str, Any]:
+def _handle_code_cluster_list(
+    client: PrSearchApiClient, args: argparse.Namespace
+) -> dict[str, Any]:
     return client.list_clusters(args.repo, limit=args.limit)
 
 
-
-def _handle_code_cluster_show(client: PrSearchApiClient, args: argparse.Namespace) -> dict[str, Any]:
+def _handle_code_cluster_show(
+    client: PrSearchApiClient, args: argparse.Namespace
+) -> dict[str, Any]:
     return client.get_cluster(args.repo, cluster_id=args.cluster_id)
-
 
 
 def _handle_issue_status(client: PrSearchApiClient, args: argparse.Namespace) -> dict[str, Any]:
     return client.get_issue_status(args.repo, variant=args.variant)
 
 
-
 def _handle_issue_list(client: PrSearchApiClient, args: argparse.Namespace) -> dict[str, Any]:
     return client.list_issue_clusters(args.repo, limit=args.limit, variant=args.variant)
-
 
 
 def _handle_issue_show(client: PrSearchApiClient, args: argparse.Namespace) -> dict[str, Any]:
     return client.get_issue_cluster(args.repo, cluster_id=args.cluster_id, variant=args.variant)
 
 
-
 def _handle_issue_for_pr(client: PrSearchApiClient, args: argparse.Namespace) -> dict[str, Any]:
     return client.get_issue_clusters_for_pr(args.repo, number=args.number, variant=args.variant)
-
 
 
 def _handle_issue_membership(client: PrSearchApiClient, args: argparse.Namespace) -> dict[str, Any]:
@@ -300,7 +308,6 @@ def _handle_issue_membership(client: PrSearchApiClient, args: argparse.Namespace
     )
 
 
-
 def _handle_issue_duplicate_prs(
     client: PrSearchApiClient,
     args: argparse.Namespace,
@@ -308,10 +315,8 @@ def _handle_issue_duplicate_prs(
     return client.list_issue_duplicate_prs(args.repo, limit=args.limit, variant=args.variant)
 
 
-
 def _handle_issue_best(client: PrSearchApiClient, args: argparse.Namespace) -> dict[str, Any]:
     return client.get_issue_best(args.repo, variant=args.variant)
-
 
 
 def _handle_contributor_status(
@@ -321,13 +326,11 @@ def _handle_contributor_status(
     return client.get_contributor_status(args.repo)
 
 
-
 def _handle_contributor_list(
     client: PrSearchApiClient,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
     return client.list_contributors(args.repo, limit=args.limit)
-
 
 
 def _handle_contributor_show(
@@ -337,13 +340,11 @@ def _handle_contributor_show(
     return client.get_contributor(args.repo, login=args.login)
 
 
-
 def _handle_contributor_risk(
     client: PrSearchApiClient,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
     return client.get_contributor_risk(args.repo, login=args.login)
-
 
 
 def _emit(payload: dict[str, Any], output_format: str, formatter: OutputFormatter) -> None:
@@ -368,6 +369,38 @@ def _emit(payload: dict[str, Any], output_format: str, formatter: OutputFormatte
                 print(value)
         return
     raise RuntimeError(f"unsupported output format {output_format!r}")
+
+
+def _resolve_base_url(base_url: str | None, repo: str) -> str:
+    if base_url:
+        return base_url
+    env_base_url = os.environ.get(BASE_URL_ENV_VAR)
+    if env_base_url:
+        return env_base_url
+    inferred = _infer_base_url_from_repo(repo)
+    if inferred is not None:
+        return inferred
+    return DEFAULT_FALLBACK_BASE_URL
+
+
+def _infer_base_url_from_repo(repo: str) -> str | None:
+    repo_name = _repo_name(repo)
+    if repo_name is None:
+        return None
+    return f"https://evalstate-{_space_slug(repo_name)}-pr-api.hf.space"
+
+
+def _repo_name(repo: str) -> str | None:
+    owner, sep, name = repo.strip().partition("/")
+    if not sep or not owner or not name:
+        return None
+    return name
+
+
+def _space_slug(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower())
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    return slug or value.strip().lower()
 
 
 def _rewrite_legacy_args(argv: list[str] | None) -> list[str] | None:

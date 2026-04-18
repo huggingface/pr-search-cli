@@ -10,9 +10,15 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from pr_search_cli.cli import (
+    BASE_URL_ENV_VAR,
+    _infer_base_url_from_repo,
+    _resolve_base_url,
+    _space_slug,
+)
+
 RoutePayload = object | tuple[int, object]
 TEST_ENV = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}
-
 
 
 def test_module_help_smoke() -> None:
@@ -29,6 +35,34 @@ def test_module_help_smoke() -> None:
     assert "code" in result.stdout
     assert "issues" in result.stdout
     assert "contributors" in result.stdout
+
+
+def test_base_url_is_inferred_from_repo_by_convention() -> None:
+    assert _infer_base_url_from_repo("huggingface/transformers") == (
+        "https://evalstate-transformers-pr-api.hf.space"
+    )
+    assert _infer_base_url_from_repo("huggingface/diffusers") == (
+        "https://evalstate-diffusers-pr-api.hf.space"
+    )
+    assert _infer_base_url_from_repo("openclaw/openclaw") == (
+        "https://evalstate-openclaw-pr-api.hf.space"
+    )
+
+
+def test_base_url_resolution_prefers_explicit_url() -> None:
+    assert _resolve_base_url("https://example.test", "huggingface/transformers") == (
+        "https://example.test"
+    )
+
+
+def test_base_url_resolution_uses_env_var(monkeypatch) -> None:
+    monkeypatch.setenv(BASE_URL_ENV_VAR, "https://env.example.test")
+    assert _resolve_base_url(None, "huggingface/transformers") == "https://env.example.test"
+
+
+def test_space_slug_normalizes_repo_names() -> None:
+    assert _space_slug("my_repo") == "my-repo"
+    assert _space_slug("Repo.Name") == "repo-name"
 
 
 def test_group_without_subcommand_prints_help() -> None:
@@ -140,7 +174,6 @@ def test_status_and_code_similar_json() -> None:
     payload = json.loads(similar.stdout)
     assert payload["similar_prs"][0]["neighbor_pr_number"] == 99
     assert payload["similar_prs"][0]["neighbor_title"] == "Fix CI cache"
-
 
 
 def test_issue_commands_text_and_ids() -> None:
@@ -263,9 +296,7 @@ def test_issue_commands_text_and_ids() -> None:
             "pr_number": 123,
             "found": True,
             "cluster_count": 1,
-            "clusters": [
-                {"cluster_id": "issue-cluster-100-2", "membership_role": "canonical"}
-            ],
+            "clusters": [{"cluster_id": "issue-cluster-100-2", "membership_role": "canonical"}],
             "cluster_id": "issue-cluster-100-2",
             "matched": True,
             "matching_cluster_ids": ["issue-cluster-100-2"],
@@ -599,7 +630,6 @@ def _json_server(routes: Mapping[str, RoutePayload]):
         server.shutdown()
         thread.join()
         server.server_close()
-
 
 
 def _route_response(payload: RoutePayload) -> tuple[int, object]:

@@ -7,6 +7,26 @@ Default deployment target:
 - API: `https://evalstate-openclaw-pr-api.hf.space`
 - repo: `openclaw/openclaw`
 
+When `--base-url` is omitted, the CLI now infers the Hugging Face Space host from `--repo`
+by convention:
+
+- `openclaw/openclaw` -> `https://evalstate-openclaw-pr-api.hf.space`
+- `huggingface/transformers` -> `https://evalstate-transformers-pr-api.hf.space`
+- `huggingface/diffusers` -> `https://evalstate-diffusers-pr-api.hf.space`
+
+You can also set a default API host with:
+
+```bash
+export PR_SEARCH_BASE_URL=https://evalstate-transformers-pr-api.hf.space
+```
+
+Resolution order:
+
+1. explicit `--base-url`
+2. `PR_SEARCH_BASE_URL`
+3. inferred host from `--repo`
+4. fallback default deployment target
+
 ## Install / run
 
 Run without installing permanently:
@@ -59,6 +79,7 @@ Global flags:
 
 - `--base-url`
 - `-R, --repo`
+- `PR_SEARCH_BASE_URL` environment variable
 - `--format text|json|jsonl|ids`
 - `--json` (compatibility alias for `--format json`)
 
@@ -74,6 +95,10 @@ Issue-cluster commands also support:
 
 ```bash
 pr-search status
+pr-search -R huggingface/transformers status
+pr-search -R huggingface/transformers code similar 44940
+pr-search -R huggingface/diffusers issues list
+PR_SEARCH_BASE_URL=https://evalstate-transformers-pr-api.hf.space pr-search status
 pr-search code status
 pr-search code similar 67144 --mode live
 pr-search code clusters list --limit 20
